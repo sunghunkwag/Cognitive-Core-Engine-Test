@@ -28,7 +28,7 @@ import os
 import random
 import hashlib
 from dataclasses import dataclass, field
-from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 from collections import defaultdict, Counter
 
 # ==============================================================================
@@ -70,6 +70,8 @@ class ProgramGenome:
     generation: int = 0
     last_score: float = 0.0
     last_cfg_hash: str = ""
+    concept_trace: List[str] = field(default_factory=list)
+    concept_proposals: List[str] = field(default_factory=list)
 
     def clone(self) -> "ProgramGenome":
         return ProgramGenome(
@@ -77,6 +79,8 @@ class ProgramGenome:
             instructions=[i.clone() for i in self.instructions],
             parents=list(self.parents),
             generation=self.generation,
+            concept_trace=list(self.concept_trace),
+            concept_proposals=list(self.concept_proposals),
         )
 
     def code_hash(self) -> str:
@@ -405,10 +409,119 @@ class MacroLibrary:
             Instruction("RET", 0, 0, 0),
         ]
 
+# ==============================================================================
+# 5.2) Concept Library (macros + reusable fragments)
+# ==============================================================================
+
+@dataclass
+class Concept:
+    cid: str
+    name: str
+    kind: str
+    payload: Dict[str, Any]
+    compile_fn_id: str
+    stats: Dict[str, Any] = field(default_factory=dict)
+    discovered_gen: int = 0
+    parents: List[str] = field(default_factory=list)
+
+def _inst_tuple_list(instructions: List[Instruction]) -> List[Tuple[Any, ...]]:
+    return [inst.to_tuple() for inst in instructions]
+
+def _concept_hash_from_insts(instructions: List[Instruction]) -> str:
+    h = hashlib.sha256()
+    for inst in instructions:
+        h.update(repr(inst.to_tuple()).encode("utf-8"))
+    return h.hexdigest()[:16]
+
+def _compile_macro_v1(payload: Dict[str, Any]) -> List[Instruction]:
+    insts = []
+    for op, a, b, c in payload.get("instructions", []):
+        insts.append(Instruction(str(op), int(a), int(b), int(c)))
+    return insts
+
+CONCEPT_COMPILE_FNS: Dict[str, Callable[[Dict[str, Any]], List[Instruction]]] = {
+    "macro_v1": _compile_macro_v1,
+}
+
+class ConceptLibrary:
+    def __init__(self, max_size: int = 200) -> None:
+        self.max_size = max_size
+        self._concepts: Dict[str, Concept] = {}
+        self._hash_index: Dict[str, str] = {}
+
+    def __len__(self) -> int:
+        return len(self._concepts)
+
+    def all_concepts(self) -> List[Concept]:
+        return list(self._concepts.values())
+
+    def get(self, cid: str) -> Optional[Concept]:
+        return self._concepts.get(cid)
+
+    def add_concept(self, concept: Concept, dedup: bool = True) -> Optional[str]:
+        instructions = self.compile(concept)
+        if not instructions:
+            return None
+        digest = _concept_hash_from_insts(instructions)
+        if dedup and digest in self._hash_index:
+            return self._hash_index[digest]
+        if len(self._concepts) >= self.max_size:
+            return None
+        self._concepts[concept.cid] = concept
+        self._hash_index[digest] = concept.cid
+        concept.stats.setdefault("digest", digest)
+        concept.stats.setdefault("length", len(instructions))
+        return concept.cid
+
+    def compile(self, concept: Concept) -> List[Instruction]:
+        fn = CONCEPT_COMPILE_FNS.get(concept.compile_fn_id)
+        if not fn:
+            return []
+        return fn(concept.payload)
+
+    def save(self, path: str) -> None:
+        data = []
+        for c in self._concepts.values():
+            data.append({
+                "cid": c.cid,
+                "name": c.name,
+                "kind": c.kind,
+                "payload": c.payload,
+                "compile_fn_id": c.compile_fn_id,
+                "stats": c.stats,
+                "discovered_gen": c.discovered_gen,
+                "parents": c.parents,
+            })
+        Path(path).write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+
+    def load(self, path: str) -> None:
+        p = Path(path)
+        if not p.exists():
+            return
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        for entry in raw or []:
+            concept = Concept(
+                cid=str(entry.get("cid", "")),
+                name=str(entry.get("name", "concept")),
+                kind=str(entry.get("kind", "macro")),
+                payload=dict(entry.get("payload", {})),
+                compile_fn_id=str(entry.get("compile_fn_id", "macro_v1")),
+                stats=dict(entry.get("stats", {})),
+                discovered_gen=int(entry.get("discovered_gen", 0)),
+                parents=list(entry.get("parents", [])),
+            )
+            self.add_concept(concept, dedup=True)
+
 # ------------------------------------------------------------------------------
 # Feedback-biased opcode sampling (Stage2 -> Stage1)
 # ------------------------------------------------------------------------------
 OP_BIAS: Dict[str, float] = {}  # e.g., {"LOAD":1.4,"ADD":1.3,...}
+CONCEPT_BIAS: Dict[str, float] = {}
+CONCEPT_ANTI_BIAS: Set[str] = set()
+MACRO_LENGTH_BIAS: float = 0.0
 
 def set_op_bias(op_bias: Dict[str, float]) -> None:
     """
@@ -417,6 +530,15 @@ def set_op_bias(op_bias: Dict[str, float]) -> None:
     """
     global OP_BIAS
     OP_BIAS = {k: float(v) for k, v in (op_bias or {}).items() if float(v) > 0.0}
+
+def set_concept_bias(concept_bias: Dict[str, float],
+                     anti_bias: Optional[List[str]] = None,
+                     macro_length_bias: Optional[float] = None) -> None:
+    global CONCEPT_BIAS, CONCEPT_ANTI_BIAS, MACRO_LENGTH_BIAS
+    CONCEPT_BIAS = {k: float(v) for k, v in (concept_bias or {}).items() if float(v) > 0.0}
+    CONCEPT_ANTI_BIAS = set(anti_bias or [])
+    if macro_length_bias is not None:
+        MACRO_LENGTH_BIAS = float(macro_length_bias)
 
 def _sample_op(rng: random.Random) -> str:
     if not OP_BIAS:
@@ -877,6 +999,66 @@ class OmegaForgeV13:
 # 8) CLI flows
 # ==============================================================================
 
+def run_concept_selftests() -> None:
+    vm = VirtualMachine(max_steps=50)
+    lib = ConceptLibrary(max_size=10)
+    concept = Concept(
+        cid="c_copy_first",
+        name="copy_first",
+        kind="macro",
+        payload={"instructions": [("LOAD", 0, 0, 0)]},
+        compile_fn_id="macro_v1",
+        discovered_gen=0,
+        parents=[],
+    )
+    cid = lib.add_concept(concept, dedup=True)
+    assert cid is not None, "concept add failed"
+
+    tmp_path = "concept_selftest.json"
+    lib.save(tmp_path)
+    lib2 = ConceptLibrary(max_size=10)
+    lib2.load(tmp_path)
+    assert lib2.get("c_copy_first") is not None, "concept load failed"
+
+    insts = lib2.compile(concept)
+    assert insts, "concept compile failed"
+    g_concept = ProgramGenome(gid="g_concept", instructions=insts)
+    g_base = ProgramGenome(gid="g_base", instructions=[Instruction("HALT", 0, 0, 0)])
+
+    metrics_base = ConceptDiscoveryBenchmark.evaluate(g_base, vm)
+    metrics_concept = ConceptDiscoveryBenchmark.evaluate(g_concept, vm)
+    assert metrics_concept["holdout_pass_rate"] > metrics_base["holdout_pass_rate"], "holdout did not improve"
+
+    # Negative: train improves but holdout regresses on synthetic split
+    def _eval_custom(genome: ProgramGenome, train: List[List[float]], holdout: List[List[float]]) -> Tuple[float, float]:
+        def _score(dataset: List[List[float]]) -> float:
+            passed = 0
+            for inputs in dataset:
+                st = vm.execute(genome, inputs)
+                if st.error or not st.halted_cleanly:
+                    continue
+                if abs(st.regs[0]) < 0.01:
+                    passed += 1
+            return passed / max(1, len(dataset))
+
+        return _score(train), _score(holdout)
+
+    g_overfit = ProgramGenome(gid="g_overfit", instructions=[Instruction("SET", 0, 0, 0)])
+    train = [[0.0], [0.0, 1.0]]
+    holdout = [[1.0], [2.0, 2.0]]
+    train_rate, holdout_rate = _eval_custom(g_overfit, train, holdout)
+    assert train_rate > holdout_rate, "gap check failed"
+
+    # Negative: adversarial/shift break detection
+    adv = [[-1.0], [-2.0]]
+    adv_rate, _ = _eval_custom(g_overfit, adv, holdout)
+    assert adv_rate <= train_rate, "adversarial regression not detected"
+
+    # VM step limit regression check
+    g_loop = ProgramGenome(gid="g_loop", instructions=[Instruction("JMP", 0, 0, 0)])
+    st = vm.execute(g_loop, [1.0])
+    assert st.steps <= vm.max_steps, "step limit regression"
+
 def cmd_selftest(args: argparse.Namespace) -> int:
     """
     Selftest validates:
@@ -938,6 +1120,12 @@ def cmd_selftest(args: argparse.Namespace) -> int:
 
     # Pass criteria: file non-empty + ran gens
     print(f"SELFTEST_OK: ran_gens={gens} evidence_file_bytes={sz} evidence_successes={total_success_lines}", flush=True)
+    try:
+        run_concept_selftests()
+        print("CONCEPT_SELFTEST_OK", flush=True)
+    except Exception as e:
+        print(f"CONCEPT_SELFTEST_FAIL: {e}", flush=True)
+        return 1
     return 0
 
 def cmd_evidence_run(args: argparse.Namespace) -> int:
@@ -1330,11 +1518,146 @@ class TaskBenchmarkV4:
             print(f"      case {i}: input={inputs[:5]}{'...' if len(inputs)>5 else ''} expected={expected} got={got}")
 
 # ==============================================================================
+# 5.6) Concept discovery micro-domains
+# ==============================================================================
+
+class ConceptDiscoveryBenchmark:
+    DOMAINS: List[Dict[str, Any]] = [
+        {
+            "name": "COPY_FIRST",
+            "out_loc": "reg0",
+            "train": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0, 7.0]],
+            "holdout": [[9.0, 1.0], [2.0, 8.0, 3.0]],
+            "adversarial": [[0.0], [-1.0, 2.0]],
+            "shift": [[10.0, 11.0, 12.0, 13.0]],
+            "oracle": lambda xs: float(xs[0]) if xs else 0.0,
+        },
+        {
+            "name": "PREFIX_SUM_2",
+            "out_loc": "reg0",
+            "train": [[1.0, 2.0], [2.0, 2.0], [3.0, 1.0]],
+            "holdout": [[4.0, 5.0], [0.0, 3.0]],
+            "adversarial": [[-1.0, 4.0], [7.0, -2.0]],
+            "shift": [[10.0, 20.0]],
+            "oracle": lambda xs: float(xs[0] + xs[1]) if len(xs) >= 2 else float(sum(xs)),
+        },
+        {
+            "name": "ARGMAX_TIE_FIRST",
+            "out_loc": "reg0",
+            "train": [[1.0, 3.0, 2.0], [5.0, 5.0, 4.0], [2.0, 1.0, 2.0]],
+            "holdout": [[0.0, 0.0, 1.0], [9.0, 7.0, 9.0]],
+            "adversarial": [[-1.0, -1.0, -2.0]],
+            "shift": [[100.0, 50.0, 75.0, 100.0]],
+            "oracle": lambda xs: float(next((i for i, v in enumerate(xs) if v == max(xs)), 0)) if xs else 0.0,
+        },
+    ]
+
+    @staticmethod
+    def _eval_case(genome: ProgramGenome, vm: VirtualMachine, inputs: List[float], out_loc: str, expected: float) -> bool:
+        st = vm.execute(genome, inputs)
+        if st.error or not st.halted_cleanly:
+            return False
+        if out_loc == "reg0":
+            got = st.regs[0]
+        elif out_loc == "mem0":
+            got = st.memory.get(0, 0.0)
+        else:
+            got = 0.0
+        return abs(got - expected) < 0.01
+
+    @staticmethod
+    def evaluate(genome: ProgramGenome, vm: VirtualMachine) -> Dict[str, Any]:
+        splits = {"train": [], "holdout": [], "adversarial": [], "shift": []}
+        for domain in ConceptDiscoveryBenchmark.DOMAINS:
+            oracle = domain["oracle"]
+            out_loc = domain["out_loc"]
+            for split_name in ("train", "holdout", "adversarial", "shift"):
+                dataset = domain.get(split_name, [])
+                passes = 0
+                for inputs in dataset:
+                    expected = oracle(inputs)
+                    if ConceptDiscoveryBenchmark._eval_case(genome, vm, inputs, out_loc, expected):
+                        passes += 1
+                total = max(1, len(dataset))
+                splits[split_name].append(passes / total)
+
+        train_rate = float(sum(splits["train"]) / max(1, len(splits["train"])))
+        holdout_rate = float(sum(splits["holdout"]) / max(1, len(splits["holdout"])))
+        adv_rate = float(sum(splits["adversarial"]) / max(1, len(splits["adversarial"])))
+        shift_rate = float(sum(splits["shift"]) / max(1, len(splits["shift"])))
+
+        train_count = sum(len(d.get("train", [])) for d in ConceptDiscoveryBenchmark.DOMAINS)
+        holdout_count = sum(len(d.get("holdout", [])) for d in ConceptDiscoveryBenchmark.DOMAINS)
+        holdout_cost = min(4.0, float(holdout_count) / max(1.0, float(train_count)))
+
+        return {
+            "train_pass_rate": train_rate,
+            "holdout_pass_rate": holdout_rate,
+            "adversarial_pass_rate": adv_rate,
+            "distribution_shift": {"holdout_pass_rate": shift_rate},
+            "discovery_cost": {"train": float(train_count), "holdout": holdout_cost},
+        }
+
+def detect_memorization(genome: ProgramGenome) -> bool:
+    large_set = sum(1 for inst in genome.instructions if inst.op == "SET" and abs(inst.a) > 20)
+    set_total = sum(1 for inst in genome.instructions if inst.op == "SET")
+    if large_set >= 3:
+        return True
+    if set_total >= max(6, len(genome.instructions) // 2):
+        return True
+    return False
+
+def find_repeated_subsequence(instructions: List[Instruction],
+                              min_len: int = 2,
+                              max_len: int = 5) -> Optional[List[Instruction]]:
+    if len(instructions) < min_len * 2:
+        return None
+    best_seq = None
+    best_count = 1
+    tuples = _inst_tuple_list(instructions)
+    for L in range(min_len, min(max_len, len(instructions)) + 1):
+        counts: Dict[Tuple[Any, ...], int] = {}
+        for i in range(0, len(tuples) - L + 1):
+            key = tuple(tuples[i:i + L])
+            counts[key] = counts.get(key, 0) + 1
+        for key, count in counts.items():
+            if count > best_count:
+                best_count = count
+                best_seq = [Instruction(*t) for t in key]
+    if best_count > 1 and best_seq:
+        return best_seq
+    return None
+
+def detect_concepts_in_genome(genome: ProgramGenome, concepts: ConceptLibrary) -> List[str]:
+    if not concepts or not genome.instructions:
+        return []
+    hits = []
+    inst_tuples = _inst_tuple_list(genome.instructions)
+    for concept in concepts.all_concepts():
+        insts = concepts.compile(concept)
+        if not insts:
+            continue
+        c_tuples = tuple(_inst_tuple_list(insts))
+        if len(c_tuples) == 0:
+            continue
+        for i in range(0, len(inst_tuples) - len(c_tuples) + 1):
+            if tuple(inst_tuples[i:i + len(c_tuples)]) == c_tuples:
+                hits.append(concept.cid)
+                break
+    return hits
+
+
+
+# ==============================================================================
 # Stage 1: Structural Discovery (unchanged)
 # ==============================================================================
 
 class Stage1Engine:
-    def __init__(self, seed: int = 42):
+    def __init__(self,
+                 seed: int = 42,
+                 concepts_on: bool = False,
+                 concept_budget: int = 80,
+                 concept_library_path: str = ""):
         global_random.seed(seed)
         self.vm = VirtualMachine()
         self.detector = StrictStructuralDetector()
@@ -1342,6 +1665,11 @@ class Stage1Engine:
         self.population: List[ProgramGenome] = []
         self.generation: int = 0
         self.candidates: List[Dict[str, Any]] = []
+        self.concepts_on = concepts_on
+        self.concept_library = ConceptLibrary(max_size=concept_budget)
+        self.concept_library_path = concept_library_path
+        if self.concepts_on and concept_library_path:
+            self.concept_library.load(concept_library_path)
         
     def init_population(self):
         self.population = []
@@ -1357,8 +1685,56 @@ class Stage1Engine:
         child.generation = self.generation
         child.parents = [parent.gid]
         child.gid = f"g{self.generation}_{global_random.randint(0, 999999)}"
-        
+
         roll = global_random.random()
+        if self.concepts_on and roll < 0.12:
+            concept = self._sample_concept()
+            if concept:
+                insts = self.concept_library.compile(concept)
+                if insts and len(child.instructions) + len(insts) < self.cfg.max_code_len:
+                    pos = global_random.randint(0, len(child.instructions))
+                    child.instructions[pos:pos] = [i.clone() for i in insts]
+                    child.concept_trace.append(concept.cid)
+                    return child
+        if self.concepts_on and roll < 0.22:
+            seq = find_repeated_subsequence(parent.instructions, min_len=2, max_len=5)
+            if seq:
+                cid = f"c{self.generation}_{global_random.randint(0, 999999)}"
+                payload = {"instructions": [i.to_tuple() for i in seq]}
+                concept = Concept(
+                    cid=cid,
+                    name=f"macro_len{len(seq)}",
+                    kind="macro",
+                    payload=payload,
+                    compile_fn_id="macro_v1",
+                    discovered_gen=self.generation,
+                    parents=[parent.gid],
+                )
+                added_cid = self.concept_library.add_concept(concept, dedup=True)
+                if added_cid:
+                    child.concept_proposals.append(added_cid)
+            return child
+        if self.concepts_on and roll < 0.28:
+            c1 = self._sample_concept()
+            c2 = self._sample_concept()
+            if c1 and c2 and c1.cid != c2.cid:
+                insts = self.concept_library.compile(c1) + self.concept_library.compile(c2)
+                if 0 < len(insts) <= 6:
+                    cid = f"c{self.generation}_{global_random.randint(0, 999999)}"
+                    payload = {"instructions": [i.to_tuple() for i in insts]}
+                    concept = Concept(
+                        cid=cid,
+                        name=f"compose_{c1.cid}_{c2.cid}",
+                        kind="macro",
+                        payload=payload,
+                        compile_fn_id="macro_v1",
+                        discovered_gen=self.generation,
+                        parents=[c1.cid, c2.cid],
+                    )
+                    added_cid = self.concept_library.add_concept(concept, dedup=True)
+                    if added_cid:
+                        child.concept_proposals.append(added_cid)
+            return child
         if roll < 0.15 and len(child.instructions) + 10 < self.cfg.max_code_len:
             skeleton = global_random.choice([
                 TaskMacroLibrary.sum_skeleton,
@@ -1381,8 +1757,24 @@ class Stage1Engine:
             if len(child.instructions) > 8:
                 pos = global_random.randint(0, len(child.instructions) - 1)
                 child.instructions.pop(pos)
-        
+
         return child
+
+    def _sample_concept(self) -> Optional[Concept]:
+        concepts = self.concept_library.all_concepts()
+        if not concepts:
+            return None
+        weights = []
+        for c in concepts:
+            if c.cid in CONCEPT_ANTI_BIAS:
+                base = 0.1
+            else:
+                base = CONCEPT_BIAS.get(c.cid, 1.0)
+            length = int(c.stats.get("length", len(self.concept_library.compile(c)) or 1))
+            if MACRO_LENGTH_BIAS > 0.0:
+                base *= 1.0 / (1.0 + MACRO_LENGTH_BIAS * max(0, length - 1))
+            weights.append(max(0.05, base))
+        return global_random.choices(concepts, weights=weights, k=1)[0]
     
     def step(self) -> int:
         self.generation += 1
@@ -1395,13 +1787,34 @@ class Stage1Engine:
             
             if passed:
                 successes += 1
+                if detect_memorization(g):
+                    continue
                 scores = TaskBenchmarkV4.evaluate(g, self.vm)
+                concept_metrics = ConceptDiscoveryBenchmark.evaluate(g, self.vm)
+                hints: List[str] = []
+                for cid in g.concept_trace:
+                    c = self.concept_library.get(cid)
+                    if c:
+                        hints.append(f"use:{cid}:{c.name}")
+                    else:
+                        hints.append(f"use:{cid}")
+                for cid in g.concept_proposals:
+                    c = self.concept_library.get(cid)
+                    if c:
+                        hints.append(f"propose:{cid}:{c.name}")
+                    else:
+                        hints.append(f"propose:{cid}")
                 candidate = {
                     "gid": g.gid,
                     "generation": self.generation,
                     "code": [(i.op, i.a, i.b, i.c) for i in g.instructions],
-                    "metrics": {"loops": st.loops_count, "scc_n": diag.get("scc_n", 0)},
+                    "metrics": {
+                        **concept_metrics,
+                        "structural": {"loops": st.loops_count, "scc_n": diag.get("scc_n", 0)},
+                        "memorization_suspected": False,
+                    },
                     "task_scores": scores,
+                    "hints": hints,
                 }
                 self.candidates.append(candidate)
         
@@ -1443,6 +1856,9 @@ class Stage1Engine:
         with open(out_file, 'w') as f:
             for c in self.candidates:
                 f.write(json.dumps(c) + "\n")
+
+        if self.concepts_on and self.concept_library_path:
+            self.concept_library.save(self.concept_library_path)
         
         print(f"[Stage 1] Done. Saved {len(self.candidates)} candidates to {out_file}")
         return self.candidates
@@ -1626,7 +2042,8 @@ class Stage2Engine:
 def extract_stage2_feedback(population: List[ProgramGenome],
                             vm: VirtualMachine,
                             n_top: int = 20,
-                            require_sum_pass: bool = True) -> Dict[str, Any]:
+                            require_sum_pass: bool = True,
+                            concept_library: Optional[ConceptLibrary] = None) -> Dict[str, Any]:
     """
     Compute simple sampling biases from the best Stage2 genomes.
     Biases are intended to steer Stage1's rand_inst() opcode sampling.
@@ -1634,6 +2051,9 @@ def extract_stage2_feedback(population: List[ProgramGenome],
     Returns dict:
       {
         "op_bias": {"LOAD":1.3, ...},
+        "concept_bias": {"c1":1.2, ...},
+        "macro_length_bias": 0.2,
+        "concept_anti_bias": [...],
         "meta": {"n_used":..., "n_top":..., "require_sum_pass":...}
       }
     """
@@ -1675,8 +2095,40 @@ def extract_stage2_feedback(population: List[ProgramGenome],
             w = ( (c + 1.0) / (avg + 1.0) ) ** 0.7
             op_bias[op] = float(max(0.05, min(5.0, w)))
 
+    concept_bias: Dict[str, float] = {}
+    concept_anti_bias: List[str] = []
+    macro_length_bias = 0.0
+    if concept_library:
+        concept_scores: Counter = Counter()
+        concept_counts: Counter = Counter()
+        concept_lengths: List[int] = []
+        for g in picked:
+            metrics = ConceptDiscoveryBenchmark.evaluate(g, vm)
+            holdout = metrics.get("holdout_pass_rate", 0.0)
+            train = metrics.get("train_pass_rate", 0.0)
+            gap = max(0.0, train - holdout)
+            used = detect_concepts_in_genome(g, concept_library)
+            for cid in used:
+                concept_counts[cid] += 1
+                concept_scores[cid] += holdout
+                if gap > 0.25:
+                    concept_anti_bias.append(cid)
+            for cid in used:
+                c = concept_library.get(cid)
+                if c:
+                    concept_lengths.append(int(c.stats.get("length", 1)))
+        for cid, cnt in concept_counts.items():
+            score = concept_scores.get(cid, 0.0) / max(1, cnt)
+            concept_bias[cid] = float(max(0.05, min(5.0, 0.5 + score)))
+        if concept_lengths:
+            avg_len = sum(concept_lengths) / max(1, len(concept_lengths))
+            macro_length_bias = max(0.0, min(1.5, (avg_len - 1.0) / 4.0))
+
     return {
         "op_bias": op_bias,
+        "concept_bias": concept_bias,
+        "macro_length_bias": macro_length_bias,
+        "concept_anti_bias": list(sorted(set(concept_anti_bias))),
         "meta": {
             "n_used": len(picked),
             "n_top": n_top,
@@ -1702,6 +2154,10 @@ def apply_feedback_to_stage1(feedback: Dict[str, Any]) -> None:
     """
     op_bias = (feedback or {}).get("op_bias", {}) if isinstance(feedback, dict) else {}
     set_op_bias(op_bias)
+    concept_bias = (feedback or {}).get("concept_bias", {}) if isinstance(feedback, dict) else {}
+    anti_bias = (feedback or {}).get("concept_anti_bias", []) if isinstance(feedback, dict) else []
+    macro_length_bias = (feedback or {}).get("macro_length_bias", None) if isinstance(feedback, dict) else None
+    set_concept_bias(concept_bias, anti_bias=anti_bias, macro_length_bias=macro_length_bias)
 
 def main():
     parser = argparse.ArgumentParser(description="Two-Stage Engine V4 (SUM Fix)")
@@ -1713,6 +2169,9 @@ def main():
     pf.add_argument("--feedback_in", type=str, default="", help="Optional Stage2 feedback JSON to bias Stage1 opcode sampling")
     pf.add_argument("--feedback_out", type=str, default="stage2_feedback.json", help="Where to write Stage2 feedback JSON")
     pf.add_argument("--feedback_topk", type=int, default=20, help="Top-K genomes used to compute feedback biases")
+    pf.add_argument("--concepts_on", action="store_true", help="Enable concept invention layer in Stage1")
+    pf.add_argument("--concept_budget", type=int, default=80, help="Max concepts in library")
+    pf.add_argument("--concept_library_path", type=str, default="concept_library.json", help="Path to concept library JSON")
 
     pf.add_argument("--seed", type=int, default=42)
     pf.add_argument("--agg", type=str, default="gmean", choices=["gmean", "min", "avg"])
@@ -1737,7 +2196,12 @@ def main():
             fb = load_feedback_json(args.feedback_in)
             apply_feedback_to_stage1(fb)
 
-        s1 = Stage1Engine(seed=args.seed)
+        s1 = Stage1Engine(
+            seed=args.seed,
+            concepts_on=args.concepts_on,
+            concept_budget=args.concept_budget,
+            concept_library_path=args.concept_library_path,
+        )
         candidates = s1.run(args.stage1_gens, "stage1_candidates.jsonl")
         
         print()
@@ -1748,7 +2212,13 @@ def main():
 
         # Write Stage2->Stage1 feedback biases
         try:
-            fb = extract_stage2_feedback(s2.population, s2.vm, n_top=args.feedback_topk, require_sum_pass=True)
+            fb = extract_stage2_feedback(
+                s2.population,
+                s2.vm,
+                n_top=args.feedback_topk,
+                require_sum_pass=True,
+                concept_library=s1.concept_library if args.concepts_on else None,
+            )
             save_feedback_json(fb, args.feedback_out)
             print(f"\n[Feedback] Wrote Stage2 feedback to {args.feedback_out}")
         except Exception as e:
