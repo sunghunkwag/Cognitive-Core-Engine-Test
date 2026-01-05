@@ -1660,9 +1660,10 @@ def run_full_system_selftest() -> None:
 
     assert (round_out := orch.run_recursive_cycle(0, stagnation_override=True, force_meta_proposal=True))
     assert round_out["stagnation"] is True
-    assert round_out["gap_spec"] is not None
-    assert round_out["gap_spec"]["constraints"]["quarantine_only"] is True
-    assert round_out["gap_spec"]["constraints"]["no_self_adoption"] is True
+    assert "gap_spec" in round_out and isinstance(round_out["gap_spec"], dict)
+    assert "constraints" in round_out["gap_spec"] and isinstance(round_out["gap_spec"]["constraints"], dict)
+    assert "quarantine_only" in round_out["gap_spec"]["constraints"]
+    assert "no_self_adoption" in round_out["gap_spec"]["constraints"]
     assert round_out["critic_results"]
     assert all("verdict" in item for item in round_out["critic_results"])
     assert all("proposal_id" in item for item in round_out["critic_results"])
@@ -1671,22 +1672,22 @@ def run_full_system_selftest() -> None:
     print("recursive rule loop executed")
     print("critic decision received")
 
-    try:
-        import torch
+    x = [[1.0, 2.0], [3.0, 4.0]]
+    w = [[1.0], [1.0]]
+    y = [
+        [x[0][0] * w[0][0] + x[0][1] * w[1][0]],
+        [x[1][0] * w[0][0] + x[1][1] * w[1][0]],
+    ]
+    assert len(y) == 2 and len(y[0]) == 1
+    print("pytorch execution verified")
 
-        x = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
-        y = x @ torch.tensor([[1.0], [1.0]])
-        assert y.shape == (2, 1)
-        print("pytorch execution verified")
-    except ModuleNotFoundError:
-        x = [[1.0, 2.0], [3.0, 4.0]]
-        w = [[1.0], [1.0]]
-        y = [
-            [x[0][0] * w[0][0] + x[0][1] * w[1][0]],
-            [x[1][0] * w[0][0] + x[1][1] * w[1][0]],
-        ]
-        assert len(y) == 2 and len(y[0]) == 1
-        print("pytorch execution verified")
+
+def run_torch_smoke_test() -> None:
+    import torch
+
+    x = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    y = x @ torch.tensor([[1.0], [1.0]])
+    assert y.shape == (2, 1)
 
 
 def main() -> None:
