@@ -1,4 +1,4 @@
-# Cognitive-Core-Engine
+# Cognitive-Core-Engine Test 
 
 Production-style integration of a fixed orchestrator (NON-RSI core) with two plugins:
 - Invention plugin (Omega Forge) invoked ONLY on stagnation
@@ -57,3 +57,4 @@ If any constraint cannot be satisfied, stop and explain why rather than inventin
 
 ## Repository Status
 Research/engineering hybrid. Safety via governance gate and rollback mindset.
+
