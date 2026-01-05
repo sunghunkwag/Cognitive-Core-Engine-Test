@@ -101,6 +101,12 @@ def critic_evaluate_candidate_packet(
     packet: Dict[str, Any],
     invariants: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    def _coerce_float(value: Any) -> Optional[float]:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     invariants = dict(invariants or {})
     proposal = packet.get("proposal", {}) if isinstance(packet, dict) else {}
     evaluation_rules = packet.get("evaluation_rules", {}) if isinstance(packet, dict) else {}
@@ -112,8 +118,55 @@ def critic_evaluate_candidate_packet(
     evidence = proposal.get("evidence", {}) if isinstance(proposal, dict) else {}
 
     serialized = json.dumps(candidate, sort_keys=True, default=str)
-    score = (int(sha256(serialized)[:8], 16) % 100) / 100.0
+    hash_score = (int(sha256(serialized)[:8], 16) % 100) / 100.0
     min_score = float(evaluation_rules.get("min_score", 0.4))
+
+    metrics = candidate.get("metrics", {}) if isinstance(candidate, dict) else {}
+    if not isinstance(metrics, dict):
+        metrics = {}
+    train_rate = _coerce_float(metrics.get("train_pass_rate"))
+    holdout_rate = _coerce_float(metrics.get("holdout_pass_rate"))
+    discovery_cost = metrics.get("discovery_cost", {})
+    holdout_cost = None
+    if isinstance(discovery_cost, dict):
+        holdout_cost = _coerce_float(discovery_cost.get("holdout"))
+    adversarial_rate = _coerce_float(metrics.get("adversarial_pass_rate"))
+    distribution_shift = metrics.get("distribution_shift", {})
+    shift_holdout_rate = None
+    if isinstance(distribution_shift, dict):
+        shift_holdout_rate = _coerce_float(distribution_shift.get("holdout_pass_rate"))
+
+    holdout_weight = float(evaluation_rules.get("holdout_weight", 1.0))
+    gap_penalty = float(evaluation_rules.get("generalization_gap_penalty", 0.75))
+    cost_penalty = float(evaluation_rules.get("discovery_cost_penalty", 0.08))
+    gap = None
+    score = hash_score
+    score_components = {
+        "holdout_term": None,
+        "gap_penalty": 0.0,
+        "cost_penalty": 0.0,
+        "hash_score": hash_score,
+    }
+    if holdout_rate is not None:
+        if train_rate is not None:
+            gap = abs(train_rate - holdout_rate)
+        score = holdout_weight * holdout_rate
+        score_components["holdout_term"] = score
+        if gap is not None:
+            penalty = gap_penalty * gap
+            score -= penalty
+            score_components["gap_penalty"] = penalty
+        if holdout_cost is not None:
+            penalty = cost_penalty * holdout_cost
+            score -= penalty
+            score_components["cost_penalty"] = penalty
+
+    min_holdout = float(evaluation_rules.get("min_holdout_pass_rate", 0.3))
+    max_gap = float(evaluation_rules.get("max_generalization_gap", 0.05))
+    min_adversarial = float(evaluation_rules.get("min_adversarial_pass_rate", min_holdout))
+    min_shift_holdout = float(evaluation_rules.get("min_shift_holdout_pass_rate", min_holdout))
+    max_holdout_cost = float(evaluation_rules.get("max_holdout_discovery_cost", 4.0))
+    require_holdout_metrics = bool(evaluation_rules.get("require_holdout_metrics", False))
 
     evidence_count = 0
     if isinstance(evidence, dict):
@@ -127,6 +180,43 @@ def critic_evaluate_candidate_packet(
     min_evidence = int(invariants.get("min_evidence", 1))
     evidence_ok = evidence_count >= min_evidence or bool(candidate)
 
+    holdout_ok = True
+    if require_holdout_metrics and holdout_rate is None:
+        holdout_ok = False
+    if holdout_rate is not None and holdout_rate < min_holdout:
+        holdout_ok = False
+
+    gap_ok = True
+    if gap is not None and gap > max_gap:
+        gap_ok = False
+
+    adversarial_ok = True
+    if adversarial_rate is not None and adversarial_rate < min_adversarial:
+        adversarial_ok = False
+
+    shift_ok = True
+    if shift_holdout_rate is not None and shift_holdout_rate < min_shift_holdout:
+        shift_ok = False
+
+    holdout_cost_ok = True
+    if require_holdout_metrics:
+        holdout_cost_ok = holdout_cost is not None and holdout_cost <= max_holdout_cost
+
+    regression_ok = True
+    baseline = metrics.get("baseline")
+    if isinstance(baseline, dict):
+        baseline_train = _coerce_float(baseline.get("train_pass_rate"))
+        baseline_holdout = _coerce_float(baseline.get("holdout_pass_rate"))
+        if (
+            train_rate is not None
+            and holdout_rate is not None
+            and baseline_train is not None
+            and baseline_holdout is not None
+            and train_rate > baseline_train
+            and holdout_rate < baseline_holdout
+        ):
+            regression_ok = False
+
     meta_ok = True
     if level == "L2":
         proposed_rate = meta_update.get("l1_update_rate")
@@ -136,16 +226,36 @@ def critic_evaluate_candidate_packet(
         else:
             meta_ok = float(bounds[0]) <= float(proposed_rate) <= float(bounds[1])
 
-    verdict = "approve" if score >= min_score and evidence_ok and meta_ok else "reject"
+    guardrails_ok = (
+        holdout_ok
+        and gap_ok
+        and adversarial_ok
+        and shift_ok
+        and regression_ok
+        and holdout_cost_ok
+    )
+    verdict = "approve" if score >= min_score and evidence_ok and meta_ok and guardrails_ok else "reject"
     approval_key = sha256(f"{proposal.get('proposal_id', '')}:{level}:{score}")[:12]
     return {
         "verdict": verdict,
         "score": score,
+        "hash_score": hash_score,
+        "score_components": score_components,
         "approval_key": approval_key,
         "level": level,
         "min_score": min_score,
         "evidence_ok": evidence_ok,
         "meta_ok": meta_ok,
+        "holdout_rate": holdout_rate,
+        "train_rate": train_rate,
+        "gap": gap,
+        "holdout_ok": holdout_ok,
+        "gap_ok": gap_ok,
+        "adversarial_ok": adversarial_ok,
+        "shift_ok": shift_ok,
+        "regression_ok": regression_ok,
+        "holdout_cost_ok": holdout_cost_ok,
+        "guardrails_ok": guardrails_ok,
     }
 
 

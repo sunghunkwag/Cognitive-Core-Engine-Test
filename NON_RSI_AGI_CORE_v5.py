@@ -1205,9 +1205,18 @@ class Orchestrator:
         }
         self.candidate_queue: List[RuleProposal] = []
         self.evaluation_rules: Dict[str, Any] = {
-            "min_score": 0.42,
+            "min_score": 0.25,
             "l1_update_rate": 0.08,
             "min_transfer": 0.05,
+            "min_holdout_pass_rate": 0.30,
+            "max_generalization_gap": 0.05,
+            "holdout_weight": 1.0,
+            "generalization_gap_penalty": 0.75,
+            "discovery_cost_penalty": 0.08,
+            "min_adversarial_pass_rate": 0.28,
+            "min_shift_holdout_pass_rate": 0.25,
+            "max_holdout_discovery_cost": 4.0,
+            "require_holdout_metrics": True,
         }
         self.meta_rules: Dict[str, Any] = {
             "l1_update_rate_bounds": (0.04, 0.20),
@@ -1772,6 +1781,20 @@ def run_contract_negative_tests() -> None:
     l1_verdict = orch._critic_evaluate(l1_proposal)
     l2_verdict = orch._critic_evaluate(l2_proposal)
 
+    def make_l0_candidate(metrics: Dict[str, Any]) -> RuleProposal:
+        candidate = {
+            "gid": stable_hash({"neg": metrics}),
+            "metrics": metrics,
+        }
+        return RuleProposal(
+            proposal_id=stable_hash({"level": "L0", "metrics": metrics}),
+            level="L0",
+            payload={"candidate": candidate, "gap_spec": round_out.get("gap_spec", {})},
+            creator_key="creator",
+            created_ms=now_ms(),
+            evidence={"metrics": metrics},
+        )
+
     def validate_critic_verdict(result: Dict[str, Any]) -> None:
         assert "verdict" in result, "verdict missing"
         assert "approval_key" in result, "approval_key missing"
@@ -1901,6 +1924,77 @@ def run_contract_negative_tests() -> None:
         (AssertionError,),
         "verdict missing",
     )
+
+    missing_holdout_verdict = orch._critic_evaluate(
+        make_l0_candidate({"train_pass_rate": 0.34})
+    )
+    assert missing_holdout_verdict["verdict"] == "reject"
+
+    low_holdout_verdict = orch._critic_evaluate(
+        make_l0_candidate({"train_pass_rate": 0.31, "holdout_pass_rate": 0.22})
+    )
+    assert low_holdout_verdict["verdict"] == "reject"
+
+    gap_verdict = orch._critic_evaluate(
+        make_l0_candidate({"train_pass_rate": 0.38, "holdout_pass_rate": 0.30})
+    )
+    assert gap_verdict["verdict"] == "reject"
+
+    adversarial_verdict = orch._critic_evaluate(
+        make_l0_candidate(
+            {
+                "train_pass_rate": 0.34,
+                "holdout_pass_rate": 0.31,
+                "adversarial_pass_rate": 0.20,
+                "adversarial_examples": [
+                    {"input": [3, -2, 7], "expected": [7, -2, 3], "prediction": [3, 7, -2]},
+                    {"input": [4, 4, 1], "expected": [1, 4, 4], "prediction": [4, 1, 4]},
+                    {"input": [-1, 5, 2], "expected": [2, 5, -1], "prediction": [-1, 2, 5]},
+                ],
+            }
+        )
+    )
+    assert adversarial_verdict["verdict"] == "reject"
+
+    shift_verdict = orch._critic_evaluate(
+        make_l0_candidate(
+            {
+                "train_pass_rate": 0.34,
+                "holdout_pass_rate": 0.31,
+                "distribution_shift": {"holdout_pass_rate": 0.18},
+                "distribution_shift_examples": [
+                    {"input": [9, -4, 0, 3], "expected": [3, 0, -4, 9], "prediction": [9, 3, 0, -4]},
+                    {"input": [2, -5, 6, -1], "expected": [-1, 6, -5, 2], "prediction": [2, -1, -5, 6]},
+                    {"input": [8, 1, 1, -2], "expected": [-2, 1, 1, 8], "prediction": [8, 1, -2, 1]},
+                ],
+            }
+        )
+    )
+    assert shift_verdict["verdict"] == "reject"
+
+    regression_verdict = orch._critic_evaluate(
+        make_l0_candidate(
+            {
+                "train_pass_rate": 0.36,
+                "holdout_pass_rate": 0.28,
+                "baseline": {"train_pass_rate": 0.33, "holdout_pass_rate": 0.30},
+            }
+        )
+    )
+    assert regression_verdict["verdict"] == "reject"
+
+    high_cost_verdict = orch._critic_evaluate(
+        make_l0_candidate(
+            {
+                "train_pass_rate": 0.34,
+                "holdout_pass_rate": 0.31,
+                "discovery_cost": {"holdout": 6.5},
+            }
+        )
+    )
+    assert high_cost_verdict["verdict"] == "reject"
+    assert high_cost_verdict.get("holdout_cost_ok") is False
+    assert high_cost_verdict.get("guardrails_ok") is False
     print("negative contract tests passed")
 
 
