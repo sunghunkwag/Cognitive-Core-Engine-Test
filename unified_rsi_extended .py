@@ -97,6 +97,58 @@ def unified_diff(old: str, new: str, name: str) -> str:
     )
 
 
+def critic_evaluate_candidate_packet(
+    packet: Dict[str, Any],
+    invariants: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    invariants = dict(invariants or {})
+    proposal = packet.get("proposal", {}) if isinstance(packet, dict) else {}
+    evaluation_rules = packet.get("evaluation_rules", {}) if isinstance(packet, dict) else {}
+
+    level = str(proposal.get("level", "L0"))
+    payload = proposal.get("payload", {}) if isinstance(proposal, dict) else {}
+    candidate = payload.get("candidate", {})
+    meta_update = payload.get("meta_update", {})
+    evidence = proposal.get("evidence", {}) if isinstance(proposal, dict) else {}
+
+    serialized = json.dumps(candidate, sort_keys=True, default=str)
+    score = (int(sha256(serialized)[:8], 16) % 100) / 100.0
+    min_score = float(evaluation_rules.get("min_score", 0.4))
+
+    evidence_count = 0
+    if isinstance(evidence, dict):
+        for val in evidence.values():
+            if isinstance(val, dict):
+                evidence_count += len(val)
+            elif isinstance(val, list):
+                evidence_count += len(val)
+            else:
+                evidence_count += 1
+    min_evidence = int(invariants.get("min_evidence", 1))
+    evidence_ok = evidence_count >= min_evidence or bool(candidate)
+
+    meta_ok = True
+    if level == "L2":
+        proposed_rate = meta_update.get("l1_update_rate")
+        bounds = invariants.get("l1_update_rate_bounds", (0.04, 0.20))
+        if proposed_rate is None:
+            meta_ok = False
+        else:
+            meta_ok = float(bounds[0]) <= float(proposed_rate) <= float(bounds[1])
+
+    verdict = "approve" if score >= min_score and evidence_ok and meta_ok else "reject"
+    approval_key = sha256(f"{proposal.get('proposal_id', '')}:{level}:{score}")[:12]
+    return {
+        "verdict": verdict,
+        "score": score,
+        "approval_key": approval_key,
+        "level": level,
+        "min_score": min_score,
+        "evidence_ok": evidence_ok,
+        "meta_ok": meta_ok,
+    }
+
+
 class RunLogger:
     def __init__(self, path: Path, window: int = 10, append: bool = False):
         self.path = path
