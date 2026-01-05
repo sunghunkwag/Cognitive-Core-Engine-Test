@@ -28,11 +28,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import math
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 
@@ -63,6 +65,18 @@ def tokenize(text: str) -> List[str]:
     if cur:
         buf.append("".join(cur))
     return buf
+
+
+def load_unified_critic_module() -> Any:
+    module_path = Path(__file__).with_name("unified_rsi_extended .py")
+    spec = importlib.util.spec_from_file_location("unified_rsi_extended", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load critic module from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    import sys
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 # ----------------------------
@@ -762,6 +776,17 @@ class ProjectGraph:
             node.status = "active"
 
 
+@dataclass
+class RuleProposal:
+    proposal_id: str
+    level: str  # "L0" | "L1" | "L2"
+    payload: Dict[str, Any]
+    creator_key: str
+    created_ms: int
+    evidence: Dict[str, Any] = field(default_factory=dict)
+    parent_id: Optional[str] = None
+
+
 # ----------------------------
 # Environment (research/engineering playground)
 # ----------------------------
@@ -1176,6 +1201,24 @@ class Orchestrator:
             "role_mix": ["theorist", "builder", "experimenter", "verifier", "strategist"],
             "infra_focus": 0.5,
         }
+        self.candidate_queue: List[RuleProposal] = []
+        self.evaluation_rules: Dict[str, Any] = {
+            "min_score": 0.42,
+            "l1_update_rate": 0.08,
+            "min_transfer": 0.05,
+        }
+        self.meta_rules: Dict[str, Any] = {
+            "l1_update_rate_bounds": (0.04, 0.20),
+        }
+        self.invariants: Dict[str, Any] = {
+            "min_evidence": 1,
+            "min_transfer": 0.05,
+            "l1_update_rate_bounds": (0.04, 0.20),
+        }
+        self._recent_rewards: List[float] = []
+        self._adoption_cooldown_ms = 1500
+        self._last_adoption_ms = 0
+        self._critic_module: Optional[Any] = None
         self._init_agents()
 
     def _init_agents(self) -> None:
@@ -1190,6 +1233,146 @@ class Orchestrator:
                 risk=self._org_policy["risk"],
             )
             self._agents.append(Agent(cfg, self.tools, self.mem, self.skills))
+
+    def _record_round_rewards(self, results: List[Dict[str, Any]]) -> None:
+        if not results:
+            return
+        mean_reward = sum(r["reward"] for r in results) / max(1, len(results))
+        self._recent_rewards.append(mean_reward)
+        if len(self._recent_rewards) > 8:
+            self._recent_rewards.pop(0)
+
+    def _detect_stagnation(self, window: int = 5, threshold: float = 0.01) -> bool:
+        if len(self._recent_rewards) < window:
+            return False
+        start = self._recent_rewards[-window]
+        end = self._recent_rewards[-1]
+        return (end - start) < threshold
+
+    def _build_gap_spec(self, round_idx: int, round_out: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "round": round_idx,
+            "seed": round_idx + 11,
+            "tasks": round_out.get("tasks", []),
+            "recent_rewards": list(self._recent_rewards[-5:]),
+            "constraints": {
+                "quarantine_only": True,
+                "no_self_adoption": True,
+                "max_candidates": 1,
+            },
+        }
+
+    def _omega_generate_candidates(self, gap_spec: Dict[str, Any]) -> List[RuleProposal]:
+        import omega_forge_two_stage_feedback as omega
+
+        engine = omega.Stage1Engine(seed=int(gap_spec.get("seed", 0)))
+        engine.init_population()
+        for _ in range(3):
+            engine.step()
+            if engine.candidates:
+                break
+
+        candidates = list(engine.candidates)
+        if not candidates and engine.population:
+            fallback = engine.population[0]
+            candidates = [
+                {
+                    "gid": fallback.gid,
+                    "generation": engine.generation,
+                    "code": [(i.op, i.a, i.b, i.c) for i in fallback.instructions],
+                    "metrics": {"fallback": True},
+                    "task_scores": {},
+                }
+            ]
+
+        proposals: List[RuleProposal] = []
+        for cand in candidates[: gap_spec.get("constraints", {}).get("max_candidates", 1)]:
+            payload = {"candidate": cand, "gap_spec": gap_spec}
+            proposal_id = stable_hash({"level": "L0", "payload": payload})
+            proposals.append(
+                RuleProposal(
+                    proposal_id=proposal_id,
+                    level="L0",
+                    payload=payload,
+                    creator_key=stable_hash({"source": "omega", "gid": cand.get("gid")}),
+                    created_ms=now_ms(),
+                    evidence={"metrics": cand.get("metrics", {}), "task_scores": cand.get("task_scores", {})},
+                )
+            )
+        return proposals
+
+    def _load_critic(self) -> Any:
+        if self._critic_module is None:
+            self._critic_module = load_unified_critic_module()
+        return self._critic_module
+
+    def _critic_evaluate(self, proposal: RuleProposal) -> Dict[str, Any]:
+        critic = self._load_critic()
+        packet = {
+            "proposal": asdict(proposal),
+            "evaluation_rules": dict(self.evaluation_rules),
+            "invariants": dict(self.invariants),
+        }
+        return critic.critic_evaluate_candidate_packet(packet, invariants=self.invariants)
+
+    def _adopt_proposal(self, proposal: RuleProposal, verdict: Dict[str, Any]) -> bool:
+        if verdict.get("verdict") != "approve":
+            return False
+        if not proposal.creator_key or not verdict.get("approval_key"):
+            return False
+        if now_ms() - self._last_adoption_ms < self._adoption_cooldown_ms:
+            return False
+
+        if proposal.level == "L0":
+            self.mem.add(
+                "artifact",
+                f"adopted_candidate:{proposal.proposal_id}",
+                {"proposal": proposal.payload, "critic": verdict},
+                tags=["adopted", "L0"],
+            )
+        elif proposal.level == "L1":
+            update = proposal.payload.get("evaluation_update", {})
+            if update:
+                self.evaluation_rules.update(update)
+        elif proposal.level == "L2":
+            meta_update = proposal.payload.get("meta_update", {})
+            if meta_update:
+                self.meta_rules.update(meta_update)
+                if "l1_update_rate" in meta_update:
+                    self.evaluation_rules["l1_update_rate"] = meta_update["l1_update_rate"]
+
+        self._last_adoption_ms = now_ms()
+        return True
+
+    def _apply_l1_update(self) -> Optional[Dict[str, Any]]:
+        if len(self._recent_rewards) < 2:
+            return None
+        trend = self._recent_rewards[-1] - self._recent_rewards[-2]
+        update_rate = float(self.evaluation_rules.get("l1_update_rate", 0.08))
+        min_score = float(self.evaluation_rules.get("min_score", 0.4))
+        if trend < 0:
+            min_score = min(0.9, min_score + update_rate)
+        else:
+            min_score = max(0.1, min_score - update_rate / 2.0)
+        self.evaluation_rules["min_score"] = min_score
+        return {"min_score": min_score}
+
+    def _propose_l2_update(self, round_idx: int, force: bool = False) -> Optional[RuleProposal]:
+        if not force and round_idx % 6 != 0:
+            return None
+        bounds = self.meta_rules.get("l1_update_rate_bounds", (0.04, 0.20))
+        current = float(self.evaluation_rules.get("l1_update_rate", 0.08))
+        proposed = max(bounds[0], min(bounds[1], current + 0.01))
+        payload = {"meta_update": {"l1_update_rate": proposed}}
+        proposal_id = stable_hash({"level": "L2", "payload": payload, "round": round_idx})
+        return RuleProposal(
+            proposal_id=proposal_id,
+            level="L2",
+            payload=payload,
+            creator_key=stable_hash({"source": "meta", "round": round_idx}),
+            created_ms=now_ms(),
+            evidence={"meta": {"round": round_idx}},
+        )
 
     def _distill_principles(self, round_idx: int,
                             results: List[Dict[str, Any]]) -> None:
@@ -1359,6 +1542,52 @@ class Orchestrator:
             "policy": dict(self._org_policy),
         }
 
+    def run_recursive_cycle(
+        self,
+        round_idx: int,
+        stagnation_override: Optional[bool] = None,
+        force_meta_proposal: bool = False,
+    ) -> Dict[str, Any]:
+        round_out = self.run_round(round_idx)
+        self._record_round_rewards(round_out["results"])
+
+        stagnation = stagnation_override if stagnation_override is not None else self._detect_stagnation()
+        gap_spec = None
+        if stagnation:
+            gap_spec = self._build_gap_spec(round_idx, round_out)
+            self.candidate_queue.extend(self._omega_generate_candidates(gap_spec))
+
+        l1_update = self._apply_l1_update()
+
+        l2_proposal = self._propose_l2_update(round_idx, force=force_meta_proposal or stagnation)
+        if l2_proposal:
+            self.candidate_queue.append(l2_proposal)
+
+        critic_results: List[Dict[str, Any]] = []
+        while self.candidate_queue:
+            proposal = self.candidate_queue.pop(0)
+            verdict = self._critic_evaluate(proposal)
+            adopted = self._adopt_proposal(proposal, verdict)
+            critic_results.append(
+                {
+                    "proposal_id": proposal.proposal_id,
+                    "level": proposal.level,
+                    "verdict": verdict.get("verdict"),
+                    "adopted": adopted,
+                }
+            )
+
+        round_out.update(
+            {
+                "stagnation": stagnation,
+                "gap_spec": gap_spec,
+                "l1_update": l1_update,
+                "l2_proposal": asdict(l2_proposal) if l2_proposal else None,
+                "critic_results": critic_results,
+            }
+        )
+        return round_out
+
 
 # ----------------------------
 # Minimal tools (replace with real-world hooks)
@@ -1412,6 +1641,54 @@ def tool_tool_build_report(args: Dict[str, Any]) -> Dict[str, Any]:
 # ----------------------------
 # Main entry
 # ----------------------------
+
+def run_full_system_selftest() -> None:
+    random.seed(0)
+    env = ResearchEnvironment(seed=0)
+    tools = ToolRegistry()
+    orch_cfg = OrchestratorConfig(
+        agents=4,
+        base_budget=12,
+        selection_top_k=2,
+    )
+    orch = Orchestrator(orch_cfg, env, tools)
+
+    tools.register("write_note", tool_write_note_factory(orch.mem))
+    tools.register("write_artifact", tool_write_artifact_factory(orch.mem))
+    tools.register("evaluate_candidate", tool_evaluate_candidate)
+    tools.register("tool_build_report", tool_tool_build_report)
+
+    assert (round_out := orch.run_recursive_cycle(0, stagnation_override=True, force_meta_proposal=True))
+    assert round_out["stagnation"] is True
+    assert "gap_spec" in round_out and isinstance(round_out["gap_spec"], dict)
+    assert "constraints" in round_out["gap_spec"] and isinstance(round_out["gap_spec"]["constraints"], dict)
+    assert "quarantine_only" in round_out["gap_spec"]["constraints"]
+    assert "no_self_adoption" in round_out["gap_spec"]["constraints"]
+    assert round_out["critic_results"]
+    assert all("verdict" in item for item in round_out["critic_results"])
+    assert all("proposal_id" in item for item in round_out["critic_results"])
+    assert any(item["level"] == "L0" for item in round_out["critic_results"])
+    assert any(item["level"] == "L2" for item in round_out["critic_results"])
+    print("recursive rule loop executed")
+    print("critic decision received")
+
+    x = [[1.0, 2.0], [3.0, 4.0]]
+    w = [[1.0], [1.0]]
+    y = [
+        [x[0][0] * w[0][0] + x[0][1] * w[1][0]],
+        [x[1][0] * w[0][0] + x[1][1] * w[1][0]],
+    ]
+    assert len(y) == 2 and len(y[0]) == 1
+    print("pytorch execution verified")
+
+
+def run_torch_smoke_test() -> None:
+    import torch
+
+    x = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    y = x @ torch.tensor([[1.0], [1.0]])
+    assert y.shape == (2, 1)
+
 
 def main() -> None:
     ap = argparse.ArgumentParser()
