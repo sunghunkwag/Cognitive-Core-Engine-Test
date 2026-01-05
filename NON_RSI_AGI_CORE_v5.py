@@ -1697,6 +1697,65 @@ def run_torch_smoke_test() -> None:
     print("pytorch execution verified")
 
 
+def run_contract_negative_tests() -> None:
+    random.seed(1)
+    env = ResearchEnvironment(seed=1)
+    tools = ToolRegistry()
+    orch_cfg = OrchestratorConfig(
+        agents=4,
+        base_budget=12,
+        selection_top_k=2,
+    )
+    orch = Orchestrator(orch_cfg, env, tools)
+
+    tools.register("write_note", tool_write_note_factory(orch.mem))
+    tools.register("write_artifact", tool_write_artifact_factory(orch.mem))
+    tools.register("evaluate_candidate", tool_evaluate_candidate)
+    tools.register("tool_build_report", tool_tool_build_report)
+
+    round_out = orch.run_recursive_cycle(0, stagnation_override=True, force_meta_proposal=True)
+
+    def expect_failure(fn: Callable[[], None], exc_types: Tuple[type, ...]) -> None:
+        try:
+            fn()
+        except exc_types:
+            return
+        except Exception:
+            raise
+        raise AssertionError("expected failure was not raised")
+
+    assert "gap_spec" in round_out and isinstance(round_out["gap_spec"], dict)
+    assert "critic_results" in round_out and isinstance(round_out["critic_results"], list)
+    assert any(item.get("level") == "L0" for item in round_out["critic_results"])
+    def _bad_adoption_assert() -> None:
+        assert all(
+            (not item.get("adopted", False)) or item.get("verdict") == "approve"
+            for item in [{"adopted": True, "verdict": "reject"}]
+        )
+
+    expect_failure(_bad_adoption_assert, (AssertionError,))
+    expect_failure(lambda: ({"payload": {}})["payload"]["candidate"], (KeyError,))
+    expect_failure(lambda: ({"level": "L0"})["verdict"], (KeyError,))
+    expect_failure(lambda: ({"constraints": {}})["constraints"]["quarantine_only"], (KeyError,))
+
+    def _missing_gid_assert() -> None:
+        candidate = {"code": []}
+        assert "gid" in candidate
+
+    expect_failure(_missing_gid_assert, (AssertionError,))
+    expect_failure(lambda: ({"verdict": "approve"})["approval_key"], (KeyError,))
+
+    def _adopt_without_verdict() -> None:
+        proposal = RuleProposal(
+            proposal_id="bad_adopt",
+            level="L0",
+            payload={"candidate": {}},
+            creator_key="creator",
+            created_ms=now_ms(),
+        )
+        assert orch._adopt_proposal(proposal, {}) is True
+
+    expect_failure(_adopt_without_verdict, (AssertionError,))
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--rounds", type=int, default=40)
