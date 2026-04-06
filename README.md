@@ -1,6 +1,8 @@
 # Cognitive-Core-Engine-Test
 
-Multi-module architecture integrating fixed cognitive core with invention, governance, and AGI capability layers.
+Multi-module architecture integrating fixed cognitive core with invention, governance, and **AGI-oriented capability layers**.
+
+> **Scope Notice:** This is a research prototype demonstrating AGI-relevant cognitive mechanisms — autonomous goal generation, hierarchical abstraction, intrinsic motivation, and governance-gated self-modification — within a simulated environment. The system does **not** claim to achieve AGI. Capability scores are internal proxy metrics, not verified against real-world AGI benchmarks (e.g., ARC-AGI).
 
 ## Architecture
 
@@ -8,7 +10,7 @@ Multi-module architecture integrating fixed cognitive core with invention, gover
 
 Three-module system with strict separation of concerns:
 
-1. **NON_RSI_AGI_CORE_v5.py** - Fixed orchestrator (main loop owner)
+1. **NON_RSI_AGI_CORE_v5.py** - Fixed cognitive orchestrator (main loop owner)
    - Hyperdimensional Computing (HDC) with 10,000-bit vectors
    - Position-bound encoding with multi-resolution bundling
    - World model: feature-based Q-value estimation with experience replay
@@ -30,9 +32,9 @@ Three-module system with strict separation of concerns:
    - Expandable grammar for invention representation
    - Blackboard JSONL logging for multi-loop coordination
 
-### AGI Modules (`agi_modules/`)
+### Capability Modules (`agi_modules/`)
 
-12 modules implementing autonomous goal generation, intrinsic motivation, hierarchical abstraction, cross-domain transfer, self-modeling, and open-ended learning:
+12 modules implementing autonomous goal generation, intrinsic motivation, hierarchical abstraction, cross-domain transfer, self-modeling, and open-ended learning. These modules implement **AGI-adjacent** mechanisms and serve as research scaffolding toward general intelligence — they do not constitute AGI.
 
 | Module | Purpose |
 |--------|---------|
@@ -45,7 +47,7 @@ Three-module system with strict separation of concerns:
 | `self_model.py` | Capability prediction, task skip decisions, failure diagnosis (exploration/knowledge/planning) |
 | `difficulty_scheduler.py` | Curriculum learning with chaos injection to escape local optima |
 | `self_improvement.py` | Runtime parameter self-modification through governance gate |
-| `agi_tracker.py` | 5-axis AGI scoring: generalization, autonomy, self-improvement, abstraction, open-endedness |
+| `agi_tracker.py` | 5-axis capability proxy scoring: generalization, autonomy, self-improvement, abstraction, open-endedness |
 | `external_benchmark.py` | Held-out validation, overfitting detection, HDC retrieval precision benchmarks |
 
 ## Integration
@@ -57,7 +59,7 @@ Three-module system with strict separation of concerns:
 - **Contract A (GapSpec)**: Orchestrator -> Omega capability gap specification
 - **Contract B (CandidatePacket)**: Omega -> Unified -> Orchestrator artifact + evidence + verdict
 
-### AGI Extension Call Chain
+### Capability Extension Call Chain
 
 ```
 Orchestrator.run_recursive_cycle()
@@ -68,7 +70,7 @@ Orchestrator.run_recursive_cycle()
   |-- TransferEngine.transfer()        [cross-domain knowledge reuse]
   |-- SelfImprovementEngine.introspect() [parameter self-modification]
   |-- DifficultyScheduler.schedule()   [curriculum adjustment]
-  |-- AGIProgressTracker.tick_round()  [5-axis measurement]
+  |-- AGIProgressTracker.tick_round()  [5-axis proxy measurement]
   `-- ExternalBenchmark.run_adb_snapshot() [held-out validation]
 ```
 
@@ -95,17 +97,19 @@ No file merging. No self-adoption by invention module. All self-improvements go 
 - Gamma: 0.9, LR: 0.08
 - Combined reward: extrinsic (0.6) + intrinsic (0.4)
 
-**AGI Progress Scoring** (geometric mean of 5 axes):
+**AGI-Proxy Capability Scoring** (geometric mean of 5 axes):
 - Generalization: cross-domain transfer success rate
 - Autonomy: fraction of self-generated goals
 - Self-Improvement: beneficial parameter modification rate
 - Abstraction: concept graph depth / target depth
 - Open-Endedness: domain growth + difficulty progression rate
 
+> **Caveat:** These scores are internal proxy metrics only. They do not correspond to verified performance on standardized general intelligence benchmarks. Known failure modes: HDC retrieval precision currently below threshold (0.333 vs. 0.6 required); concept depth plateaus at 1/5 of target; overfitting detected on external benchmark.
+
 ## Usage
 
 ```bash
-# Run selftest suite (core + contract + AGI integration tests)
+# Run selftest suite (core + contract + capability integration tests)
 python NON_RSI_AGI_CORE_v5.py selftest
 
 # Run fixed core
@@ -114,7 +118,7 @@ python NON_RSI_AGI_CORE_v5.py --rounds 40 --agents 8
 # Reproduce baseline evidence logs
 python scripts/run_results.py
 
-# Run AGI evidence with 3-way ablation comparison
+# Run capability evidence with 3-way ablation comparison
 python scripts/run_agi_evidence.py
 
 # Run Omega Forge two-stage pipeline
@@ -123,12 +127,12 @@ python omega_forge_two_stage_feedback.py full --stage1_gens 200 --stage2_gens 20
 
 ## Evidence Summary
 
-50-round AGI evidence run (seed=42):
+50-round capability evidence run (seed=42):
 
 | Configuration | Composite Score | Domains |
 |--------------|----------------|---------|
-| **Full AGI system** | **0.500** | 42 |
-| Ablation A (no AGI modules) | 0.003 | 6 |
+| **Full system (all modules)** | **0.500** | 42 |
+| Ablation A (no capability modules) | 0.003 | 6 |
 | Ablation B (no GoalGenerator) | 0.034 | 6 |
 | Ablation C (no TransferEngine) | 0.169 | 42 |
 
@@ -138,9 +142,29 @@ See [RESULTS.md](RESULTS.md) for full evidence report including external validat
 > for the historical filename with a trailing space, but the canonical filename is the
 > space-free version.
 
+## Scope & Limitations
+
+This project is a **research/engineering prototype**, not a claim of AGI achievement.
+
+**What this system demonstrates:**
+- Governance-gated architecture with rollback — safe self-modification within fixed source code
+- Autonomous goal generation producing tasks beyond the hardcoded set
+- Hierarchical concept formation from raw experience (L0 → L3+)
+- Intrinsic motivation blending (curiosity, novelty, learning progress)
+- Cross-domain transfer learning with negative-transfer detection
+- Curriculum learning with chaos injection for local optima escape
+
+**Known limitations & open problems:**
+- Concept graph depth plateaus at 1 (target: 5) — hierarchical abstraction is shallow
+- HDC retrieval precision (0.333) does not meet the 0.6 threshold — memory system underperforms
+- External benchmark detects overfitting — generalization to truly novel domains unverified
+- Transfer analogy scores near 0.000 — cross-domain learning is structurally present but ineffective
+- Open-endedness score (1.000) is partially inflated by domain name diversification, not true capability breadth
+- All environments are simulated; real-world grounding is absent
+
 ## Status
 
-Research/engineering hybrid. Governance-gated architecture with rollback. AGI modules provide autonomous goal generation, hierarchical abstraction, and self-improvement within fixed-source-code constraints.
+Research/engineering prototype. Governance-gated architecture with rollback. Capability modules provide autonomous goal generation, hierarchical abstraction, and self-improvement within fixed-source-code constraints.
 
 ## License
 
