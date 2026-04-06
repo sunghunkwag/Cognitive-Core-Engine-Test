@@ -26,6 +26,7 @@ from agi_modules.difficulty_scheduler import DifficultyScheduler
 from agi_modules.self_improvement import SelfImprovementEngine
 from agi_modules.agi_tracker import AGIProgressTracker
 from agi_modules.external_benchmark import ExternalBenchmarkHarness
+from agi_modules.self_referential_model import AdvancedSelfReferentialModel
 
 
 def load_unified_critic_module() -> Any:
@@ -122,7 +123,7 @@ class Orchestrator:
         self.concept_graph = ConceptGraph()
         self.transfer_engine = TransferEngine(self.concept_graph, self.mem,
                                               type('WM', (), {'_weights': {}})())
-        self.self_model = SelfModel()
+        self.self_model = AdvancedSelfReferentialModel()
         self.difficulty_scheduler = DifficultyScheduler(self.competence_map, random.Random(42))
         self.self_improvement = SelfImprovementEngine()
         self.agi_tracker = AGIProgressTracker()
@@ -557,11 +558,40 @@ class Orchestrator:
         budget = int(self.cfg.base_budget * (self.cfg.budget_growth ** round_idx))
 
         results: List[Dict[str, Any]] = []
+        drift_result = None
         for idx, ag in enumerate(self._agents):
             task = tasks[idx % len(tasks)]
             proj_node = self.projects.pick_node_for_round(task.name)
             agent_budget = self._budget_for_agent(budget, ag.cfg.role)
             obs = self.env.make_observation(task, agent_budget)
+
+            # ── Self-referential state encoding (before act_on_project) ──
+            # Encode unified internal-external state into HDC space
+            active_skill_ids = [s.id for s in ag.skills.list()]
+            self.self_model.encode_self_referential_state(
+                env_obs=obs,
+                competence_map=self.competence_map,
+                concept_graph=self.concept_graph,
+                active_skills=active_skill_ids,
+            )
+            # Detect architectural drift and trigger rollback if critical
+            if idx == 0:  # check once per round, not per agent
+                drift_result = self.self_model.detect_architectural_drift()
+                if drift_result.get("should_rollback"):
+                    # Signal governance: critical cognitive drift detected
+                    # Use L1 level (evaluation rule update) to avoid L0 candidate assertion
+                    self.candidate_queue.append(RuleProposal(
+                        proposal_id=stable_hash({"drift": drift_result, "round": round_idx}),
+                        level="L1",
+                        payload={"evaluation_update": {
+                            "drift_rollback": True,
+                            "min_score": float(self.evaluation_rules.get("min_score", 0.25)) + 0.1,
+                        }},
+                        creator_key=stable_hash({"source": "self_referential_drift"}),
+                        created_ms=now_ms(),
+                        evidence={"drift": drift_result},
+                    ))
+
             res = ag.act_on_project(self.env, proj_node, obs)
             results.append(res)
             self.projects.update_node(proj_node.id, res["reward"], res["mem_id"])
@@ -701,8 +731,22 @@ class Orchestrator:
             if mod:
                 test_result = self.self_improvement.test_modification(
                     mod, self.env, {"risk": self._org_policy["risk"]})
-                applied = self.self_improvement.apply_if_beneficial(
-                    mod, test_result, {"risk": self._org_policy["risk"]})
+
+                # ── Anti-wireheading: validate metric integrity before applying ──
+                proposed_delta = test_result.get("delta", 0.0) if isinstance(test_result, dict) else float(test_result)
+                ext_scores = self.external_benchmark.get_external_score_history()
+                ext_delta = (ext_scores[-1] - ext_scores[-2]) if len(ext_scores) >= 2 else 0.0
+                integrity = self.self_model.validate_metric_integrity(
+                    proposed_delta=proposed_delta,
+                    structural_complexity_change=self.concept_graph.size(),
+                    external_benchmark_delta=ext_delta,
+                )
+                if integrity.get("should_reject"):
+                    # Reward spoofing detected — governance rejects this modification
+                    applied = False
+                else:
+                    applied = self.self_improvement.apply_if_beneficial(
+                        mod, test_result, {"risk": self._org_policy["risk"]})
                 self.agi_tracker.update_self_improvement(applied, True)
                 if applied:
                     changes = mod.get("changes", {})
@@ -765,6 +809,8 @@ class Orchestrator:
                 "self_improvement": self_improvement_result,
                 "agi_scores": self.agi_tracker.score(),
                 "agi_composite": self.agi_tracker.composite_score(),
+                "drift": self.self_model.detect_architectural_drift(),
+                "anchor_alignment": self.self_model.get_objective_anchor_alignment(),
             }
         )
         return round_out
