@@ -15,7 +15,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import NON_RSI_AGI_CORE_v5 as core
+from cognitive_core_engine.core.environment import ResearchEnvironment
+from cognitive_core_engine.core.memory import SharedMemory
+from cognitive_core_engine.core.tools import (
+    ToolRegistry, tool_write_note_factory, tool_write_artifact_factory,
+    tool_evaluate_candidate, tool_tool_build_report,
+)
+from cognitive_core_engine.core.orchestrator import Orchestrator, OrchestratorConfig
+import types
+core = types.SimpleNamespace(
+    ResearchEnvironment=ResearchEnvironment, SharedMemory=SharedMemory,
+    ToolRegistry=ToolRegistry, OrchestratorConfig=OrchestratorConfig,
+    Orchestrator=Orchestrator,
+    tool_write_note_factory=tool_write_note_factory,
+    tool_write_artifact_factory=tool_write_artifact_factory,
+    tool_evaluate_candidate=tool_evaluate_candidate,
+    tool_tool_build_report=tool_tool_build_report,
+)
 
 
 def _setup_orchestrator(seed: int, agents: int = 6) -> tuple:
