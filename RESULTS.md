@@ -1,6 +1,8 @@
-# AGI Evidence Report
+# Capability Evidence Report
 
-## 1. AGI Progress Curves
+> **Interpretation Notice:** The metrics below are **internal proxy scores** measured within a simulated environment. They do not validate general intelligence. Honest failure cases are reported in Section 7 and in the "What This Does NOT Prove" section at the bottom.
+
+## 1. Capability Progress Curves
 
 | Round | Generalization | Autonomy | Self-Improvement | Abstraction | Open-Endedness | Composite |
 |-------|---------------|----------|-----------------|-------------|---------------|-----------|
@@ -15,6 +17,11 @@
 |  40 | 0.146 | 0.700 | 1.000 | 0.200 | 1.000 | 0.459 |
 |  45 | 0.188 | 0.678 | 1.000 | 0.200 | 1.000 | 0.480 |
 
+**Notable patterns:**
+- `Self-Improvement` and `Open-Endedness` saturate quickly — both scores may be inflated (see Section 7)
+- `Abstraction` is stuck at 0.200 (concept depth 1/5 of target) throughout all 50 rounds
+- `Generalization` improves slowly but remains below 0.2 — cross-domain transfer is weak
+
 ## 2. Autonomous Goal Generation Evidence
 
 - Rounds with autonomous goals: 49/50
@@ -23,7 +30,7 @@
 ## 3. Concept Formation Evidence
 
 - Final concept count: 193
-- Final concept depth: 1
+- Final concept depth: **1** (target: 5 — hierarchical abstraction is shallow)
 - Depth over time: [(0, 0), (10, 1), (20, 1), (30, 1), (40, 1)]
 - Promoted concepts: 66
 - Multi-domain concepts (A7): 0
@@ -37,21 +44,27 @@
   - Round 6: theory -> strategy (analogy=0.033)
   - Round 7: engineering -> strategy (analogy=0.000)
 
+**Note:** Analogy scores are near 0.000 across all transfer attempts, indicating structural transfer machinery is present but not yet producing effective knowledge reuse.
+
 ## 5. Self-Improvement Evidence
 
 - Modifications proposed: 7
 - Modifications applied: 7
+
+**Note:** All 7 mods are parameter-level changes (e.g., learning rate, reward blending weights) gated by the governance module. Source code is not modified.
 
 ## 6. Open-Ended Learning Evidence
 
 - Total domains (start=6): 42
 - Open-endedness score: 1.000
 
+**Caveat:** Domain count reflects string-label diversification in simulation, not verified transfer to qualitatively different real-world task domains.
+
 ## 7. External Validation
 
 ### HDC Retrieval Precision (A6)
-- Mean precision: 0.333
-- Passes threshold (0.6): False
+- Mean precision: **0.333**
+- Passes threshold (0.6): **False** — memory system underperforms
   - algorithm: 0.000
   - systems: 0.200
   - theory: 0.800
@@ -66,35 +79,35 @@
 - First: 1.000, Last: 1.000
 
 ### Overfitting Check (A2)
-- Is overfitting: True
+- **Is overfitting: True** — generalization to held-out distributions is not validated
 
 ## 8. Ablation Comparison (A10)
 
 | Configuration | Final Composite | Mean Reward (last 10) | Concept Depth | Domains |
 |--------------|----------------|----------------------|---------------|---------|
-| **Full AGI system** | 0.4996 | 0.4584 | 1 | 42 |
-| No new modules (legacy only) | 0.0029 | 0.1067 | 1 | 6 |
+| **Full system (all modules)** | 0.4996 | 0.4584 | 1 | 42 |
+| No capability modules (legacy only) | 0.0029 | 0.1067 | 1 | 6 |
 | All modules, GoalGenerator disabled | 0.0340 | 0.1389 | 1 | 6 |
 | All modules, TransferEngine disabled | 0.1692 | 0.4584 | 1 | 42 |
 
-## What This Proves
+## What This Demonstrates
 
-- The AGI modules produce measurable progress across 5 capability axes
-- Autonomous goal generation produces diverse tasks beyond hardcoded set
-- Concept formation creates hierarchical abstractions from experience
-- Self-improvement engine proposes and applies parameter modifications
-- Ablation comparison confirms new modules contribute beyond baseline
-- HDC retrieval precision validated against domain-specific benchmark
-- SelfModel correctly reports low confidence on novel unseen tasks
+- The capability modules produce measurable proxy-score improvements across 5 axes vs. baselines
+- Autonomous goal generation expands the task set beyond the hardcoded initial domains
+- Concept formation creates shallow (depth-1) hierarchical abstractions from experience
+- Governance-gated self-improvement engine proposes and applies parameter modifications safely
+- Ablation comparison confirms each module contributes incrementally beyond the legacy baseline
+- HDC retrieval and SelfModel calibration provide partial external validation evidence
 
 ## What This Does NOT Prove
 
 - These results do not demonstrate general intelligence
-- Performance on held-out benchmarks (ARC-AGI, etc.) is not validated here
-- The system operates in a simplified simulation environment
-- Transfer learning effectiveness is limited by simulated domain similarity
-- Internal AGI axis scores may overestimate true capability (A4 caveat)
-- ConceptGraph depth is partially driven by threshold calibration
+- Performance on standardized held-out benchmarks (ARC-AGI, etc.) is not validated here
+- The system operates in a simplified simulation environment with string-labeled domains
+- Transfer learning effectiveness is near zero (analogy scores ~0.000)
+- Internal capability axis scores likely overestimate true generalizable capability
+- ConceptGraph depth is partially driven by threshold calibration, not genuine abstraction
+- Overfitting is confirmed — the system does not generalize reliably to unseen distributions
 
 ---
 Seed: 42, Rounds: 50, Time: 27.8s
