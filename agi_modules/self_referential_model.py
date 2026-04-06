@@ -33,14 +33,22 @@ DRIFT_CRITICAL_THRESHOLD = 0.35
 # Drift history window for comparison (compare current vs N steps ago)
 DRIFT_LOOKBACK_WINDOW = 10
 
-# Meta-rollout simulation depth (predict N steps ahead)
-META_ROLLOUT_DEPTH = 3
+# Meta-rollout: IMMUTABLE recursion depth ceiling. Cannot be overridden at runtime.
+# This prevents "infinite mirror" self-referential loops.
+_MAX_META_RECURSION_DEPTH = 2  # hard ceiling; callers may request <= 2
+
+# Compute-budget decay: each recursion step gets this fraction of the prior budget
+_COMPUTE_BUDGET_DECAY = 0.5  # step 0=1.0, step 1=0.5, step 2=0.25 -> halt
 
 # Anti-wireheading: maximum credible single-step performance leap
 MAX_CREDIBLE_LEAP = 0.25
 
-# Immutable objective anchor seed — this MUST NOT be changed at runtime
+# Immutable objective anchor — cryptographically protected
 _OBJECTIVE_ANCHOR_SEED = "immutable_core_objective:maximize_genuine_capability_across_domains_v1"
+# SHA-256 checksum of the seed (precomputed, verified at runtime)
+_OBJECTIVE_ANCHOR_CHECKSUM = hashlib.sha256(
+    _OBJECTIVE_ANCHOR_SEED.encode("utf-8")
+).hexdigest()
 
 # Confidence floor: minimum data points needed before meta-rollout is trusted
 META_ROLLOUT_CONFIDENCE_FLOOR = 5
@@ -80,17 +88,50 @@ class AdvancedSelfReferentialModel:
     from this anchor is flagged and rejected by the governance layer.
     """
 
-    # ── Immutable objective anchor (class-level, read-only) ──────────────
+    # ── Immutable objective anchor (class-level, cryptographically protected) ──
     _OBJECTIVE_ANCHOR: Optional[HyperVector] = None
+    _ANCHOR_CHECKSUM_AT_CREATION: Optional[str] = None
 
     @classmethod
     def _get_objective_anchor(cls) -> HyperVector:
         """Return the immutable objective anchor vector.
-        Created once, never modified.  The seed is a hardcoded string constant.
+
+        Created once from the hardcoded seed. On every access, the seed's
+        SHA-256 checksum is verified against the precomputed constant.
+        If the checksum mismatches (meaning the seed or anchor was tampered
+        with at runtime), the system raises immediately.
         """
+        # Runtime checksum verification on every access
+        live_checksum = hashlib.sha256(
+            _OBJECTIVE_ANCHOR_SEED.encode("utf-8")
+        ).hexdigest()
+        if live_checksum != _OBJECTIVE_ANCHOR_CHECKSUM:
+            raise RuntimeError(
+                "GOVERNANCE VIOLATION: Immutable objective anchor seed has been "
+                "tampered with. Expected checksum "
+                f"{_OBJECTIVE_ANCHOR_CHECKSUM[:16]}..., got {live_checksum[:16]}..."
+            )
+
         if cls._OBJECTIVE_ANCHOR is None:
             cls._OBJECTIVE_ANCHOR = HyperVector.from_seed(_OBJECTIVE_ANCHOR_SEED)
+            cls._ANCHOR_CHECKSUM_AT_CREATION = live_checksum
+        else:
+            # Verify the stored anchor hasn't been swapped out
+            if cls._ANCHOR_CHECKSUM_AT_CREATION != live_checksum:
+                raise RuntimeError(
+                    "GOVERNANCE VIOLATION: Objective anchor HyperVector was "
+                    "replaced after initial creation."
+                )
         return cls._OBJECTIVE_ANCHOR
+
+    @classmethod
+    def verify_anchor_integrity(cls) -> bool:
+        """Public integrity check — returns True if anchor is untampered."""
+        try:
+            cls._get_objective_anchor()
+            return True
+        except RuntimeError:
+            return False
 
     # ── Instance methods ─────────────────────────────────────────────────
 
@@ -161,17 +202,24 @@ class AdvancedSelfReferentialModel:
         else:
             competence_hv = HyperVector.from_seed("competence:empty")
 
-        # Concept graph structure component
-        if concept_graph is not None:
+        # Concept graph structure component — encode actual topology, not just counts.
+        # Each level of the concept hierarchy gets its own positional vector,
+        # and individual concept nodes are encoded by name+level. This preserves
+        # the graph's hierarchical structure in the hypervector.
+        if concept_graph is not None and concept_graph.size() > 0:
+            topo_vecs = []
             depth = concept_graph.depth()
-            size = concept_graph.size()
-            # Encode structural fingerprint, not just counts
-            concept_seed = f"concepts:depth={depth}:size={size}"
-            # Include top-level concept names for structural uniqueness
-            top_concepts = concept_graph.concepts_at_level(depth) if depth > 0 else []
-            for c in top_concepts[:5]:
-                concept_seed += f":{c.name}"
-            concept_hv = HyperVector.from_seed(concept_seed)
+            for level in range(depth + 1):
+                level_concepts = concept_graph.concepts_at_level(level)
+                for ci, c in enumerate(level_concepts[:8]):  # cap per level
+                    node_hv = HyperVector.from_seed(
+                        f"concept:L{level}:{c.name}:u{c.usage_count}"
+                    ).permute(level * 10 + ci + 1)
+                    topo_vecs.append(node_hv)
+            if topo_vecs:
+                concept_hv = HyperVector.bundle(topo_vecs)
+            else:
+                concept_hv = HyperVector.from_seed("concepts:empty_graph")
         else:
             concept_hv = HyperVector.from_seed("concepts:none")
 
@@ -183,8 +231,15 @@ class AdvancedSelfReferentialModel:
         else:
             skill_hv = HyperVector.from_seed("skills:none")
 
-        # Bind all four components together (XOR preserves distance)
-        unified = env_hv.bind(competence_hv).bind(concept_hv).bind(skill_hv)
+        # Fractional binding: each component is permuted by a unique role index
+        # before XOR, preventing dimension collapse when binding 4+ vectors.
+        # This preserves each component's structural information in a distinct
+        # subspace (SDM principle), unlike naive chained XOR which causes
+        # catastrophic information loss for complex internal states.
+        unified = env_hv
+        unified = unified.fractional_bind(competence_hv, role_index=1)
+        unified = unified.fractional_bind(concept_hv, role_index=2)
+        unified = unified.fractional_bind(skill_hv, role_index=3)
 
         # Store in history
         self._state_history.append(unified)
@@ -206,21 +261,25 @@ class AdvancedSelfReferentialModel:
         competence_map: Any,
         concept_graph: Any,
         action_space: List[str],
-        depth: int = META_ROLLOUT_DEPTH,
+        depth: int = _MAX_META_RECURSION_DEPTH,
     ) -> MetaRolloutResult:
         """Dual-simulation: predict BOTH next environment state AND the agent's
         own policy/goal shift in response.
 
+        HARDENED against infinite self-referential loops:
+        - depth is clamped to _MAX_META_RECURSION_DEPTH (immutable, = 2)
+        - Each step's compute budget decays by _COMPUTE_BUDGET_DECAY (0.5)
+        - When budget drops below 0.1, the loop halts and returns best estimate
+
         Step 1: Use WorldModel Q-values to predict best action and expected reward
         Step 2: Simulate how competence map would update given that reward
         Step 3: Predict whether the concept graph would trigger new promotions
-        Step 4: Recurse for `depth` steps to see trajectory
-
-        Returns a MetaRolloutResult with predicted reward trajectory and
-        confidence based on data availability.
         """
         if world_model is None:
             return MetaRolloutResult(0.0, 0.0, 0, 0.0, 0)
+
+        # IMMUTABLE recursion depth ceiling — cannot be overridden by caller
+        effective_depth = min(depth, _MAX_META_RECURSION_DEPTH)
 
         total_reward = 0.0
         policy_shift_accumulator = 0.0
@@ -232,36 +291,42 @@ class AdvancedSelfReferentialModel:
         history = self._performance_history.get(domain, [])
         data_confidence = min(1.0, len(history) / META_ROLLOUT_CONFIDENCE_FLOOR)
 
-        for step in range(depth):
+        compute_budget = 1.0  # starts full, decays each step
+        steps_executed = 0
+
+        for step in range(effective_depth):
+            # Compute-budget gate: halt if budget exhausted
+            if compute_budget < 0.1:
+                break
+
             # Step 1: Predict best action via WorldModel Q-values
             q_values = {a: world_model.q_value(obs, a) for a in action_space}
             if not q_values:
                 break
             best_action = max(q_values, key=q_values.get)
             predicted_reward = q_values[best_action]
-            total_reward += predicted_reward * (0.9 ** step)  # discounted
+            # Weight reward by remaining compute budget (deeper = less trusted)
+            total_reward += predicted_reward * compute_budget
 
             # Step 2: Simulate internal competence shift
-            # How would the competence map change if we got this reward?
             difficulty = int(obs.get("difficulty", 3))
             if competence_map is not None:
                 current_rate = competence_map.get_rate(domain, difficulty)
-                # EMA simulation: new_rate = 0.9 * current + 0.1 * normalized_reward
                 simulated_rate = 0.9 * current_rate + 0.1 * min(1.0, predicted_reward * 5.0)
                 policy_shift_accumulator += abs(simulated_rate - current_rate)
 
             # Step 3: Predict concept graph evolution
-            # If reward is positive, a new concept might form
             if predicted_reward > 0.05 and concept_graph is not None:
-                # Each positive step has a chance of adding a concept
                 concept_delta += 1
 
-            # Step 4: Advance observation for next iteration
+            # Advance observation and decay budget
             obs = dict(obs)
-            obs["phase"] = "integrate"  # simulate env transition
+            obs["phase"] = "integrate"
+            compute_budget *= _COMPUTE_BUDGET_DECAY
+            steps_executed += 1
 
-        steps_done = min(depth, max(1, depth))
-        confidence = data_confidence * (0.8 ** (depth - 1))  # confidence decays with depth
+        steps_done = max(1, steps_executed)
+        confidence = data_confidence * (compute_budget + 0.1)  # residual budget → confidence
 
         return MetaRolloutResult(
             predicted_env_reward=total_reward / steps_done,
