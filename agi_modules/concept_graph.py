@@ -349,16 +349,24 @@ class ConceptGraph:
 
         Why: enables transfer learning by reusing proven abstractions.
         Fallback: returns None if source concept doesn't exist.
-        Relaxed: a concept with ANY success context can be analogized (not just 2+ domains).
+        Self-loop guard: if source already has success_contexts in target_domain,
+        returns source_concept_id directly instead of creating a duplicate node.
+        This prevents concept graph pollution and score inflation.
         """
         source = self._nodes.get(source_concept_id)
         if source is None:
             return None
 
-        # Relaxed: allow analogy even for single-domain concepts (the transfer
-        # engine's rollback mechanism handles negative transfer).
         if not source.success_contexts:
             return None
+
+        # Self-loop guard: skip if source already covers target_domain
+        source_domains = {
+            str(ctx.get("domain", ""))
+            for ctx in source.success_contexts
+        }
+        if target_domain in source_domains:
+            return source_concept_id  # already covers this domain — no new concept needed
 
         adapted_name = f"analogy:{source.name}->{target_domain}"
         context = {
