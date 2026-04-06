@@ -51,6 +51,7 @@ from agi_modules.self_model import SelfModel
 from agi_modules.difficulty_scheduler import DifficultyScheduler
 from agi_modules.self_improvement import SelfImprovementEngine
 from agi_modules.agi_tracker import AGIProgressTracker
+from agi_modules.external_benchmark import ExternalBenchmarkHarness
 
 
 # ----------------------------
@@ -1469,6 +1470,7 @@ class Orchestrator:
         self.difficulty_scheduler = DifficultyScheduler(self.competence_map, random.Random(42))
         self.self_improvement = SelfImprovementEngine()
         self.agi_tracker = AGIProgressTracker()
+        self.external_benchmark = ExternalBenchmarkHarness(seed=42)
         self._initial_domain_count = len(self.env.tasks)
 
         self._init_agents()
@@ -1911,6 +1913,13 @@ class Orchestrator:
         self._record_round_rewards(round_out["results"])
 
         stagnation = stagnation_override if stagnation_override is not None else self._detect_stagnation()
+
+        # A5: External stagnation detection supplements internal signal
+        if not stagnation and round_idx % 5 == 0 and round_idx > 0:
+            self.external_benchmark.run_adb_snapshot()
+            external_stagnation = self.external_benchmark.detect_external_stagnation()
+            if external_stagnation:
+                stagnation = True
 
         # Feed stagnation info to GoalGenerator
         self.goal_gen.set_stagnating(bool(stagnation))

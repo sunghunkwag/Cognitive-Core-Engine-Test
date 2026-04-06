@@ -35,13 +35,17 @@ class AGIProgressTracker:
         self._transfer_attempts: int = 0
         self._self_generated_goals: int = 0
         self._total_goals: int = 0
+        self._goals_with_benchmark_improvement: int = 0  # A4: externally validated
         self._beneficial_self_mods: int = 0
+        self._externally_validated_mods: int = 0  # A4: held-out improvement
         self._total_self_mods: int = 0
         self._concept_depth: int = 0
         self._new_domains: int = 0
+        self._domains_above_random: int = 0  # A4: only count if above random
         self._difficulty_increases: int = 0
         self._rounds_elapsed: int = 0
         self._composite_history: List[float] = []
+        self._external_benchmark_scores: List[float] = []
 
     def update_transfer(self, success: float, attempted: bool) -> None:
         """Record a transfer learning attempt and outcome.
@@ -82,14 +86,43 @@ class AGIProgressTracker:
         self._concept_depth = max(self._concept_depth, depth)
 
     def update_open_endedness(self, new_domains: int,
-                              difficulty_increases: int) -> None:
+                              difficulty_increases: int,
+                              domains_above_random: int = 0) -> None:
         """Record environment expansion metrics.
 
         Why: feeds the OPEN-ENDEDNESS axis.
+        A4: only count domains where above-random performance achieved.
         Fallback: no-op.
         """
         self._new_domains += new_domains
         self._difficulty_increases += difficulty_increases
+        self._domains_above_random += domains_above_random
+
+    def update_external_benchmark(self, score: float) -> None:
+        """Record external benchmark score for overfitting detection.
+
+        Why (A2/A4): tracks held-out performance over time.
+        Fallback: no-op.
+        """
+        self._external_benchmark_scores.append(score)
+
+    def update_goal_benchmark_improvement(self, improved: bool) -> None:
+        """Record whether a self-generated goal led to benchmark improvement.
+
+        Why (A4): AUTONOMY only counts goals that led to actual improvement.
+        Fallback: no-op.
+        """
+        if improved:
+            self._goals_with_benchmark_improvement += 1
+
+    def update_externally_validated_mod(self, validated: bool) -> None:
+        """Record whether a self-improvement mod improved held-out score.
+
+        Why (A4): SELF-IMPROVEMENT only counts externally validated mods.
+        Fallback: no-op.
+        """
+        if validated:
+            self._externally_validated_mods += 1
 
     def tick_round(self) -> None:
         """Record that a round has elapsed.
