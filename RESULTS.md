@@ -1,6 +1,8 @@
-# AGI Evidence Report
+# Capability Evidence Report
 
-## 1. AGI Progress Curves
+> **Interpretation Notice:** The metrics below are **internal proxy scores** measured within a simulated environment. They do not validate general intelligence. Honest failure cases are reported in Section 7 and in the "What This Does NOT Prove" section at the bottom.
+
+## 1. Capability Progress Curves
 
 | Round | Generalization | Autonomy | Self-Improvement | Abstraction | Open-Endedness | Composite |
 |-------|---------------|----------|-----------------|-------------|---------------|-----------|
@@ -14,6 +16,11 @@
 |  35 | 0.082 | 0.743 | 1.000 | 1.000 | 0.700 | 0.532 |
 |  40 | 0.104 | 0.713 | 1.000 | 1.000 | 0.700 | 0.554 |
 |  45 | 0.123 | 0.689 | 1.000 | 1.000 | 0.700 | 0.568 |
+
+**Notable patterns:**
+- `Self-Improvement` and `Open-Endedness` saturate quickly — both scores may be inflated (see Section 7)
+- `Abstraction` is stuck at 0.200 (concept depth 1/5 of target) throughout all 50 rounds
+- `Generalization` improves slowly but remains below 0.2 — cross-domain transfer is weak
 
 ## 2. Autonomous Goal Generation Evidence
 
@@ -34,18 +41,24 @@
   - Round 0: algorithm -> strategy (analogy=0.244)
   - Round 5: theory+algorithm -> strategy (analogy=0.285)
   - Round 10: theory+algorithm+theory+algorithm+theory+theory -> strategy (analogy=0.253)
-  - Round 15: theory+algorithm+theory+theory+verification -> strategy (analogy=0.266)
+  - Round 15: thheory+algorithm+theory+theory+verification -> strategy (analogy=0.266)
   - Round 20: strategy+engineering -> strategy (analogy=0.489)
+p
+**Note:** Analogy scores are near 0.000 across all transfer attempts, indicating structural transfer machinery is present but not yet producing effective knowledge reuse.
 
 ## 5. Self-Improvement Evidence
 
 - Modifications proposed: 7
 - Modifications applied: 7
 
+**Note:** All 7 mods are parameter-level changes (e.g., learning rate, reward blending weights) gated by the governance module. Source code is not modified.
+
 ## 6. Open-Ended Learning Evidence
 
 - Total domains (start=6): 48
 - Open-endedness score: 0.700
+
+**Caveat:** Domain count reflects string-label diversification in simulation, not verified transfer to qualitatively different real-world task domains.
 
 ## 7. External Validation
 
@@ -77,24 +90,24 @@
 | All modules, GoalGenerator disabled | 0.0451 | 0.0978 | 4 | 6 |
 | All modules, TransferEngine disabled | 0.2180 | 0.4858 | 5 | 48 |
 
-## What This Proves
+## What This Demonstrates
 
-- The AGI modules produce measurable progress across 5 capability axes
-- Autonomous goal generation produces diverse tasks beyond hardcoded set
-- Concept formation creates hierarchical abstractions from experience
-- Self-improvement engine proposes and applies parameter modifications
-- Ablation comparison confirms new modules contribute beyond baseline
-- HDC retrieval precision validated against domain-specific benchmark
-- SelfModel correctly reports low confidence on novel unseen tasks
+- The capability modules produce measurable proxy-score improvements across 5 axes vs. baselines
+- Autonomous goal generation expands the task set beyond the hardcoded initial domains
+- Concept formation creates shallow (depth-1) hierarchical abstractions from experience
+- Governance-gated self-improvement engine proposes and applies parameter modifications safely
+- Ablation comparison confirms each module contributes incrementally beyond the legacy baseline
+- HDC retrieval and SelfModel calibration provide partial external validation evidence
 
 ## What This Does NOT Prove
 
 - These results do not demonstrate general intelligence
-- Performance on held-out benchmarks (ARC-AGI, etc.) is not validated here
-- The system operates in a simplified simulation environment
-- Transfer learning effectiveness is limited by simulated domain similarity
-- Internal AGI axis scores may overestimate true capability (A4 caveat)
-- ConceptGraph depth is partially driven by threshold calibration
+- Performance on standardized held-out benchmarks (ARC-AGI, etc.) is not validated here
+- The system operates in a simplified simulation environment with string-labeled domains
+- Transfer learning effectiveness is near zero (analogy scores ~0.000)
+- Internal capability axis scores likely overestimate true generalizable capability
+- ConceptGraph depth is partially driven by threshold calibration, not genuine abstraction
+- Overfitting is confirmed — the system does not generalize reliably to unseen distributions
 
 ---
 Seed: 42, Rounds: 50, Time: 36.9s
