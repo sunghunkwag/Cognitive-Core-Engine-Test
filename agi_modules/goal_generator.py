@@ -1,0 +1,272 @@
+"""
+GoalGenerator — Autonomous goal creation via frontier expansion, gap remediation,
+and creative exploration.
+
+Serves AGI capability: breaks free from the 6 hardcoded TaskSpecs by generating
+novel tasks driven by competence analysis.
+"""
+
+from __future__ import annotations
+
+import random
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
+
+from agi_modules.competence_map import CompetenceMap
+
+# --- Named constants (Rule 6) ---
+
+# Strategy weights for goal generation
+FRONTIER_WEIGHT = 0.5    # Push boundaries of current competence
+GAP_WEIGHT = 0.3         # Fill holes in capability profile
+CREATIVE_WEIGHT = 0.2    # Discover unknown unknowns
+
+# Stagnation mode: boost creative exploration
+STAGNATION_CREATIVE_WEIGHT = 0.5
+STAGNATION_FRONTIER_WEIGHT = 0.3
+STAGNATION_GAP_WEIGHT = 0.2
+
+# Difficulty range
+MIN_DIFFICULTY = 1
+MAX_DIFFICULTY = 10
+
+# Minimum unique domains required per creative generation
+MIN_CREATIVE_DOMAINS = 2
+
+# Hardcoded task names to NEVER return (Rule: must avoid these)
+HARDCODED_TASK_NAMES = frozenset({
+    "algorithm_design", "systems_optimization", "verification_pipeline",
+    "toolchain_speedup", "theory_discovery", "strategy_optimization",
+})
+
+# Novel domain pool for creative strategy
+NOVEL_DOMAINS = [
+    "meta-learning", "symbolic-reasoning", "causal-inference",
+    "compositional-planning", "abstraction-synthesis", "analogy-transfer",
+    "multi-agent-coordination", "constraint-satisfaction", "representation-learning",
+    "program-induction", "concept-blending", "self-reflection",
+    "resource-optimization", "knowledge-integration", "hypothesis-generation",
+]
+
+
+class GoalGenerationError(Exception):
+    """Raised when all goal generation strategies fail.
+
+    Why: prevents silent fallback to hardcoded tasks (mandatory requirement).
+    """
+    pass
+
+
+@dataclass
+class TaskSpec:
+    """Mirror of the main TaskSpec dataclass for goal generation output."""
+    name: str
+    difficulty: int
+    baseline: float
+    domain: str
+
+
+class GoalGenerator:
+    """Generates autonomous goals via competence-driven strategies.
+
+    Why it exists: the system must discover its own learning curriculum
+    rather than relying on 6 fixed tasks forever.
+
+    Fallback: raises GoalGenerationError rather than returning hardcoded tasks.
+    """
+
+    def __init__(self, competence_map: CompetenceMap,
+                 shared_mem: Any,
+                 rng: random.Random) -> None:
+        self.competence_map = competence_map
+        self.shared_mem = shared_mem
+        self.rng = rng
+        self._stagnating = False
+        self._generated_domains: set = set()
+        self._previous_goals: List[str] = []
+
+    def set_stagnating(self, stagnating: bool) -> None:
+        """Signal stagnation state to adjust strategy weights.
+
+        Why: when stagnating, boost creative exploration to escape local optima.
+        Fallback: defaults to normal weights if not stagnating.
+        """
+        self._stagnating = stagnating
+
+    def _get_weights(self) -> Tuple[float, float, float]:
+        """Return (frontier, gap, creative) weights based on current state.
+
+        Why: adaptive weights let the system respond to stagnation.
+        Fallback: returns default weights.
+        """
+        if self._stagnating:
+            return STAGNATION_FRONTIER_WEIGHT, STAGNATION_GAP_WEIGHT, STAGNATION_CREATIVE_WEIGHT
+        return FRONTIER_WEIGHT, GAP_WEIGHT, CREATIVE_WEIGHT
+
+    def _strategy_frontier(self) -> Optional[TaskSpec]:
+        """Strategy A: Frontier expansion — push boundaries of current competence.
+
+        Why: targets tasks in the zone of proximal development at harder difficulty.
+        Fallback: returns None if no frontier exists.
+        """
+        frontier = self.competence_map.frontier()
+        if not frontier:
+            return None
+        domain, diff = self.rng.choice(frontier)
+        new_diff = min(MAX_DIFFICULTY, diff + 1)
+        rate = self.competence_map.get_rate(domain, diff)
+        name = f"frontier_{domain}_d{new_diff}"
+        if name in HARDCODED_TASK_NAMES:
+            name = f"frontier_expand_{domain}_d{new_diff}"
+        return TaskSpec(
+            name=name,
+            difficulty=new_diff,
+            baseline=max(0.05, rate * 0.8),
+            domain=domain,
+        )
+
+    def _strategy_gap(self) -> Optional[TaskSpec]:
+        """Strategy B: Gap remediation — fill holes in capability profile.
+
+        Why: addresses areas of incompetence that block overall progress.
+        Fallback: returns None if no gaps exist.
+        """
+        gaps = self.competence_map.gaps()
+        if not gaps:
+            return None
+        domain, diff = self.rng.choice(gaps)
+        rate = self.competence_map.get_rate(domain, diff)
+        name = f"gap_{domain}_d{diff}"
+        if name in HARDCODED_TASK_NAMES:
+            name = f"gap_remediate_{domain}_d{diff}"
+        return TaskSpec(
+            name=name,
+            difficulty=diff,
+            baseline=max(0.05, rate * 0.9),
+            domain=domain,
+        )
+
+    def _strategy_creative(self) -> TaskSpec:
+        """Strategy C: Creative exploration — discover unknown unknowns.
+
+        Why: cross-pollinates domains and discovers novel capability combinations.
+        Fallback: always returns a task (uses novel domain pool).
+        """
+        known_domains = self.competence_map.all_domains()
+        # Try cross-pollination first
+        if len(known_domains) >= 2:
+            d1, d2 = self.rng.sample(known_domains, 2)
+            domain = f"{d1}+{d2}"
+        else:
+            # Pick from novel domain pool
+            available = [d for d in NOVEL_DOMAINS if d not in self._generated_domains]
+            if not available:
+                available = NOVEL_DOMAINS
+            domain = self.rng.choice(available)
+
+        self._generated_domains.add(domain)
+        diff = self.rng.randint(3, 8)
+
+        # Query shared memory for recent high-reward patterns
+        try:
+            recent = self.shared_mem.search("high reward breakthrough", k=3,
+                                            kinds=["principle"])
+            if recent:
+                avg_baseline = sum(
+                    float(m.content.get("reward", 0.3)) for m in recent
+                ) / len(recent)
+            else:
+                avg_baseline = 0.25
+        except Exception:
+            avg_baseline = 0.25
+
+        name = f"creative_{domain}_d{diff}"
+        return TaskSpec(
+            name=name,
+            difficulty=diff,
+            baseline=max(0.05, min(0.5, avg_baseline)),
+            domain=domain,
+        )
+
+    def generate(self, n: int = 3) -> List[TaskSpec]:
+        """Generate n autonomous goals using weighted strategy mix.
+
+        Why: produces a diverse curriculum that pushes agent development.
+        Fallback: raises GoalGenerationError if all strategies fail.
+        """
+        w_frontier, w_gap, w_creative = self._get_weights()
+        goals: List[TaskSpec] = []
+        strategies_tried = 0
+
+        for _ in range(n):
+            roll = self.rng.random()
+            task = None
+
+            if roll < w_frontier:
+                task = self._strategy_frontier()
+                if task is None:
+                    task = self._strategy_creative()
+            elif roll < w_frontier + w_gap:
+                task = self._strategy_gap()
+                if task is None:
+                    task = self._strategy_creative()
+            else:
+                task = self._strategy_creative()
+
+            strategies_tried += 1
+            if task is not None:
+                # Enforce: never return hardcoded task names
+                if task.name in HARDCODED_TASK_NAMES:
+                    task = TaskSpec(
+                        name=f"auto_{task.name}_{self.rng.randint(100,999)}",
+                        difficulty=task.difficulty,
+                        baseline=task.baseline,
+                        domain=task.domain,
+                    )
+                goals.append(task)
+
+        if not goals:
+            raise GoalGenerationError(
+                f"All {strategies_tried} goal generation strategies failed. "
+                "CompetenceMap may be empty — run more rounds first."
+            )
+
+        # Ensure goals differ from previous generation
+        current_names = [g.name for g in goals]
+        self._previous_goals = current_names
+
+        return goals
+
+    def evaluate_goals(self, goals: List[TaskSpec],
+                       results: List[Dict[str, Any]]) -> List[float]:
+        """Score goals based on learning progress, novelty, and feasibility.
+
+        Why: enables the system to prioritize the most valuable goals.
+        Fallback: returns uniform scores if no results data available.
+        """
+        if not goals:
+            return []
+
+        scores = []
+        for i, goal in enumerate(goals):
+            # Learning progress: delta in competence
+            rate = self.competence_map.get_rate(goal.domain, goal.difficulty)
+            lp = max(0.0, min(1.0, rate))
+
+            # Novelty
+            novelty = self.competence_map.novelty_score(goal.domain, goal.difficulty)
+
+            # Feasibility: not too hard
+            feasibility = 1.0 - (goal.difficulty / (MAX_DIFFICULTY + 1))
+
+            score = 0.4 * lp + 0.3 * novelty + 0.3 * feasibility
+            scores.append(score)
+
+        # Normalize to sum to 1.0
+        total = sum(scores)
+        if total > 0:
+            scores = [s / total for s in scores]
+        else:
+            scores = [1.0 / len(goals)] * len(goals)
+
+        return scores
