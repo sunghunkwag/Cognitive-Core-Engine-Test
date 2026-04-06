@@ -167,12 +167,12 @@ class ExternalBenchmarkHarness:
         return improvement < EXTERNAL_STAGNATION_THRESHOLD
 
     def validate_hdc_retrieval(self, shared_mem: Any) -> Dict[str, Any]:
-        """Validate HDC memory retrieval precision.
+        """Validate HDC memory retrieval precision WITHOUT tag pre-filtering.
 
         Why (A6): HDC overhaul must be validated against retrieval benchmark.
-        Uses distinct vocabulary per domain so that a precision measurement is
-        meaningful (the HDC system must actually discriminate, not just match
-        on the shared word 'research').
+        The search MUST use only the query string for similarity — no tag= filter.
+        Tag filtering makes precision trivially 1.0 (the filter does the work,
+        not HDC similarity). Cross-domain noise items challenge the retrieval.
         Fallback: returns failed status if precision below threshold.
         """
         # Use distinct vocabulary per domain for cleaner signal
@@ -197,7 +197,22 @@ class ExternalBenchmarkHarness:
                 )
                 domains[domain].append(mid)
 
-        # Test retrieval precision: query with domain-specific keywords
+        # Add cross-domain noise items to challenge retrieval
+        noise_titles = [
+            "general optimization performance benchmark task 0",
+            "algorithm systems theory combined evaluation 1",
+            "scheduling sorting proof complexity analysis 2",
+            "cache recursion theorem pipeline integration 3",
+            "mixed domain cross-cutting performance test 4",
+        ]
+        for title in noise_titles:
+            shared_mem.add(
+                "note", title,
+                {"domain": "noise", "variant": "cross_domain"},
+                tags=["hdc_benchmark"],
+            )
+
+        # Test retrieval precision: NO tag filter — HDC must discriminate by similarity
         precisions = {}
         queries = {
             "algorithm": "algorithm sorting hashing graph",
@@ -206,8 +221,8 @@ class ExternalBenchmarkHarness:
         }
         for domain in domains:
             results = shared_mem.search(
-                queries[domain], k=5, kinds=["note"],
-                tags=[domain])
+                queries[domain], k=5, kinds=["note"])
+            # NO tags= parameter — HDC similarity alone must discriminate
             if results:
                 correct = sum(
                     1 for r in results
@@ -219,11 +234,30 @@ class ExternalBenchmarkHarness:
 
         mean_precision = sum(precisions.values()) / max(1, len(precisions))
 
+        # Sanity check: if all precisions are 1.0, tag filters may be leaking
+        all_perfect = all(p == 1.0 for p in precisions.values()) if precisions else False
+        if all_perfect:
+            import warnings
+            warnings.warn(
+                "All HDC precisions = 1.000. Verify tag filters are not inflating results."
+            )
+
+        # Random baseline test: query with gibberish to measure noise floor
+        random_results = shared_mem.search(
+            "xyzzy frobble quux grault waldo", k=5, kinds=["note"])
+        random_algo_count = sum(
+            1 for r in random_results
+            if isinstance(r.content, dict) and r.content.get("domain") == "algorithm"
+        ) if random_results else 0
+        random_baseline = random_algo_count / max(1, len(random_results)) if random_results else 0.0
+
         return {
             "precisions": precisions,
             "mean_precision": mean_precision,
             "passes_threshold": mean_precision >= HDC_PRECISION_THRESHOLD,
             "threshold": HDC_PRECISION_THRESHOLD,
+            "possible_tag_inflation": all_perfect,
+            "random_baseline": random_baseline,
         }
 
     def is_overfitting(self, internal_composite: float,
