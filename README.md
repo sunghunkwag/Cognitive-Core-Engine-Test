@@ -1,170 +1,148 @@
 # Cognitive-Core-Engine-Test
 
-Multi-module architecture integrating fixed cognitive core with invention, governance, and **AGI-oriented capability layers**.
+Multi-module architecture integrating fixed cognitive core with invention, governance, and capability layers.
 
-> **Scope Notice:** This is a research prototype demonstrating AGI-relevant cognitive mechanisms — autonomous goal generation, hierarchical abstraction, intrinsic motivation, and governance-gated self-modification — within a simulated environment. The system does **not** claim to achieve AGI. Capability scores are internal proxy metrics, not verified against real-world AGI benchmarks (e.g., ARC-AGI).
+> **Scope Notice:** This is a research prototype demonstrating cognitive mechanisms — autonomous goal generation, hierarchical abstraction, intrinsic motivation, and governance-gated self-modification — within a simulated environment.
 
-## Architecture
+## Project Structure
 
-### Core Modules
-
-Three-module system with strict separation of concerns:
-
-1. **NON_RSI_AGI_CORE_v5.py** - Fixed cognitive orchestrator (main loop owner)
-   - Hyperdimensional Computing (HDC) with 10,000-bit vectors
-   - Position-bound encoding with multi-resolution bundling
-   - World model: feature-based Q-value estimation with experience replay
-   - Planner: beam search over world model (depth=3, width=6)
-   - Skill DSL: data-level interpreted programs (call/if/foreach)
-   - Multi-agent orchestrator with project graph
-   - Intrinsic motivation blending (curiosity + novelty + learning progress)
-   - Self-model task skipping and failure diagnosis
-
-2. **omega_forge_two_stage_feedback.py** - Invention plugin (invoked on stagnation)
-   - Structural-transition discovery via CFG analysis
-   - Virtual machine: 8 registers, 64 memory cells, 21 opcodes
-   - Detector: multi-stage control flow novelty (CFG edit distance, SCC analysis)
-   - Curriculum: warmup phase with relaxed constraints
-   - Crash-safe JSONL evidence logging
-
-3. **unified_rsi_extended.py** - Governance/evaluation gate (critic-only adoption)
-   - Pre-filtering and stress-checking of candidates
-   - Expandable grammar for invention representation
-   - Blackboard JSONL logging for multi-loop coordination
-
-### Capability Modules (`agi_modules/`)
-
-12 modules implementing autonomous goal generation, intrinsic motivation, hierarchical abstraction, cross-domain transfer, self-modeling, and open-ended learning. These modules implement **AGI-adjacent** mechanisms and serve as research scaffolding toward general intelligence — they do not constitute AGI.
-
-| Module | Purpose |
-|--------|---------|
-| `competence_map.py` | Tracks (domain, difficulty) success rates; identifies zone-of-proximal-development |
-| `goal_generator.py` | Autonomous goal creation via frontier expansion, gap remediation, creative exploration |
-| `intrinsic_motivation.py` | Curiosity (prediction error), novelty (visit count), learning progress rewards |
-| `concept_graph.py` | Hierarchical abstraction: L0 actions -> L1 skills -> L2 strategies -> L3+ meta |
-| `hierarchical_planner.py` | Multi-level planning using concept graph, falls back to flat beam search |
-| `transfer_engine.py` | Cross-domain knowledge transfer with negative-transfer detection and rollback |
-| `self_model.py` | Capability prediction, task skip decisions, failure diagnosis (exploration/knowledge/planning) |
-| `difficulty_scheduler.py` | Curriculum learning with chaos injection to escape local optima |
-| `self_improvement.py` | Runtime parameter self-modification through governance gate |
-| `agi_tracker.py` | 5-axis capability proxy scoring: generalization, autonomy, self-improvement, abstraction, open-endedness |
-| `external_benchmark.py` | Held-out validation, overfitting detection, HDC retrieval precision benchmarks |
+```
+cognitive_core_engine/
+  core/                     # Fixed cognitive orchestrator
+    utils.py                  stable_hash, now_ms, tokenize
+    hdc.py                    HyperVector (10,000-bit HDC)
+    memory.py                 MemoryItem, SharedMemory
+    tools.py                  ToolRegistry, tool factories
+    skills.py                 SkillStep, Skill, SkillLibrary
+    world_model.py            TransitionSummary, WorldModel (TD learning)
+    planner.py                PlanCandidate, Planner (beam search)
+    project_graph.py          ProjectNode, ProjectGraph
+    environment.py            RuleProposal, TaskSpec, ResearchEnvironment
+    agent.py                  AgentConfig, Agent (B-type architecture)
+    orchestrator.py           OrchestratorConfig, Orchestrator (C-layer)
+  omega_forge/              # Invention plugin (invoked on stagnation)
+    instructions.py           OPS, Instruction, ProgramGenome, ExecutionState
+    cfg.py                    ControlFlowGraph
+    vm.py                     VirtualMachine, MacroLibrary
+    concepts.py               Concept, ConceptLibrary, rand_inst
+    benchmark.py              TaskBenchmark, DetectorParams, StrictStructuralDetector
+    evidence.py               EvidenceWriter, EngineConfig
+    engine.py                 OmegaForgeV13
+    stage1.py                 Stage1Engine, TaskBenchmarkV4, ConceptDiscoveryBenchmark
+    stage2.py                 Stage2Engine, feedback functions
+    cli.py                    CLI commands and entry points
+  governance/               # Evaluation gate and meta-control
+    utils.py                  now_ms, sha256, clamp, safe_mkdir, etc.
+    critic.py                 critic_evaluate_candidate_packet, RunLogger
+    invention.py              Invention system (18 classes)
+    sandbox.py                SAFE_BUILTINS, validators, safe_exec, safe_eval
+    engine_types.py           EngineStrategy, TaskSpec, Genome, Batch, evaluate()
+    evolution.py              Mutation operators, OPERATORS dict, mutate_learner
+    meta.py                   SurrogateModel, MAPElitesArchive, Universe, GlobalState
+    autopatch.py              AutoPatch functions, scoring, filtering
+    loops.py                  run_duo_loop, run_rsi_loop
+    cli.py                    build_parser, cmd_* functions, main()
+agi_modules/                # Capability extension modules
+  competence_map.py           Zone-of-proximal-development tracking
+  goal_generator.py           Autonomous goal creation (frontier/gap/creative)
+  intrinsic_motivation.py     Curiosity, novelty, learning progress rewards
+  concept_graph.py            Hierarchical abstraction (L0-L5)
+  hierarchical_planner.py     Multi-level planning via concept graph
+  transfer_engine.py          Cross-domain transfer with rollback
+  self_model.py               Capability prediction, failure diagnosis
+  difficulty_scheduler.py     Curriculum learning with chaos injection
+  self_improvement.py         Empirical env-rollout parameter tuning
+  agi_tracker.py              5-axis capability proxy scoring
+  external_benchmark.py       Held-out validation, overfitting detection
+tests/
+  test_selftest.py            Core selftest + contract negative tests
+  test_benchmarks.py          ADB, ARC, program synthesis benchmarks
+  test_agi_integration.py     11 integration tests + anti-cheat audit
+scripts/
+  run_results.py              Reproduce baseline evidence logs
+  run_agi_evidence.py         50-round evidence with 3-way ablation
+  verify_self_improvement.py  Self-improvement verification suite
+main.py                     # Entry point (replaces NON_RSI_AGI_CORE_v5.py)
+```
 
 ## Integration
 
-### Original Call Chain
+### Call Chain
 
-`Orchestrator -> Omega (on stagnation) -> Unified (critic) -> Orchestrator (register/reject)`
+`Orchestrator -> Omega (on stagnation) -> Governance (critic) -> Orchestrator (register/reject)`
 
 - **Contract A (GapSpec)**: Orchestrator -> Omega capability gap specification
-- **Contract B (CandidatePacket)**: Omega -> Unified -> Orchestrator artifact + evidence + verdict
+- **Contract B (CandidatePacket)**: Omega -> Governance -> Orchestrator artifact + evidence + verdict
 
-### Capability Extension Call Chain
+### Capability Extension
 
 ```
 Orchestrator.run_recursive_cycle()
-  |-- GoalGenerator.generate()        [autonomous task creation]
-  |-- Agent.act_on_project()           [intrinsic reward blending]
-  |-- CompetenceMap.update()           [competence tracking]
-  |-- ConceptGraph.promote()           [abstraction formation]
-  |-- TransferEngine.transfer()        [cross-domain knowledge reuse]
-  |-- SelfImprovementEngine.introspect() [parameter self-modification]
-  |-- DifficultyScheduler.schedule()   [curriculum adjustment]
-  |-- AGIProgressTracker.tick_round()  [5-axis proxy measurement]
+  |-- GoalGenerator.generate()           [autonomous task creation]
+  |-- Agent.act_on_project()             [intrinsic reward blending]
+  |-- CompetenceMap.update()             [competence tracking]
+  |-- ConceptGraph.sweep_promote_all()   [hierarchical abstraction]
+  |-- TransferEngine.transfer()          [cross-domain knowledge reuse]
+  |-- SelfImprovementEngine.introspect() [empirical parameter tuning]
+  |-- DifficultyScheduler.schedule()     [curriculum adjustment]
+  |-- AGIProgressTracker.tick_round()    [5-axis proxy measurement]
   `-- ExternalBenchmark.run_adb_snapshot() [held-out validation]
 ```
 
-No file merging. No self-adoption by invention module. All self-improvements go through governance gate.
-
 ## Technical Details
 
-**HDC Memory**: Associative retrieval using bundled hypervectors with:
-- Position-bound encoding: `hv = sum(permute(token_hv, position))`
-- Multi-resolution bundling (character/bigram/trigram levels)
-- Deterministic tie-breaking (no global random perturbation)
-- Similarity threshold: 0.51 (random baseline: 0.50)
-- Max items: 20,000
+**HDC Memory**: Title-weighted position-bound encoding, deterministic tie-breaking, similarity threshold 0.51, max 20,000 items.
 
-**Structural Discovery**: CFG-based novelty detection with:
-- Edit distance K (warmup: 3, strict: 6)
-- Active subsequence length L (warmup: 8, strict: 10)
-- Minimum coverage: 0.55
-- Reproducibility: N=4 trials, max CFG variants: 2
+**World Model**: TD-learning with non-linear features, experience replay (200 samples), gamma 0.9, combined reward: extrinsic (0.6) + intrinsic (0.4).
 
-**World Model**: TD-learning with:
-- Non-linear feature combinations
-- Experience replay buffer (200 samples)
-- Gamma: 0.9, LR: 0.08
-- Combined reward: extrinsic (0.6) + intrinsic (0.4)
+**Self-Improvement**: Empirical env.step() rollouts (5 baseline + 5 modified episodes), acceptance rate guard at 80% ceiling.
 
-**AGI-Proxy Capability Scoring** (geometric mean of 5 axes):
-- Generalization: cross-domain transfer success rate
-- Autonomy: fraction of self-generated goals
-- Self-Improvement: beneficial parameter modification rate
-- Abstraction: concept graph depth / target depth
-- Open-Endedness: domain growth + difficulty progression rate
+**Capability Scoring** (geometric mean of 5 axes):
+- Generalization, Autonomy, Self-Improvement, Abstraction, Open-Endedness
 
-> **Caveat:** These scores are internal proxy metrics only. They do not correspond to verified performance on standardized general intelligence benchmarks. Self-improvement uses empirical env rollouts (not arithmetic). HDC precision 0.80 measured without tag filtering. External benchmark connected to agent WorldModel. See RESULTS.md for detailed evidence and honest failure reporting.
+> **Caveat:** These are internal proxy metrics, not verified against standardized benchmarks. See RESULTS.md for honest failure reporting.
 
 ## Usage
 
 ```bash
-# Run selftest suite (core + contract + capability integration tests)
-python NON_RSI_AGI_CORE_v5.py selftest
+# Run all tests (core + contract + 11 integration tests)
+python main.py selftest
 
-# Run fixed core
-python NON_RSI_AGI_CORE_v5.py --rounds 40 --agents 8
+# Run anti-cheat audit
+python main.py audit
 
-# Reproduce baseline evidence logs
-python scripts/run_results.py
+# Run cognitive engine
+python main.py --rounds 40 --agents 8
 
-# Run capability evidence with 3-way ablation comparison
+# Run capability evidence with 3-way ablation
 python scripts/run_agi_evidence.py
 
-# Run Omega Forge two-stage pipeline
-python omega_forge_two_stage_feedback.py full --stage1_gens 200 --stage2_gens 200 --seed 42
+# Self-improvement verification suite
+python scripts/verify_self_improvement.py
+
+# Benchmarks
+python main.py benchmark --suite ADB_v1 --seed 0 --trials 20
 ```
 
 ## Evidence Summary
 
-50-round capability evidence run (seed=42):
+50-round evidence run (seed=42):
 
-| Configuration | Composite Score | Domains |
-|--------------|----------------|---------|
-| **Full system (all modules)** | **0.494** | 47 |
+| Configuration | Composite | Domains |
+|--------------|----------|---------|
+| **Full system** | **0.494** | 47 |
 | Ablation A (no capability modules) | 0.004 | 6 |
 | Ablation B (no GoalGenerator) | 0.040 | 6 |
 | Ablation C (no TransferEngine) | 0.192 | 47 |
 
-See [RESULTS.md](RESULTS.md) for full evidence report including external validation, HDC precision benchmarks, and honest failure reporting.
-
-> Note: The critic module is `unified_rsi_extended.py`. The core loader includes a fallback
-> for the historical filename with a trailing space, but the canonical filename is the
-> space-free version.
+See [RESULTS.md](RESULTS.md) for full report.
 
 ## Scope & Limitations
 
-This project is a **research/engineering prototype**, not a claim of AGI achievement.
-
-**What this system demonstrates:**
-- Governance-gated architecture with rollback — safe self-modification within fixed source code
-- Autonomous goal generation producing tasks beyond the hardcoded set
-- Hierarchical concept formation from raw experience (L0 → L3+)
-- Intrinsic motivation blending (curiosity, novelty, learning progress)
-- Cross-domain transfer learning with negative-transfer detection
-- Curriculum learning with chaos injection for local optima escape
-
-**Known limitations & open problems:**
-- Concept graph depth reaches 5 via promote_cascade() but depth is partially driven by threshold calibration
-- HDC retrieval precision (0.80) passes threshold but relies on domain-specific vocabulary separation
-- Transfer analogy uses name-similarity heuristics, not deep structural matching
-- Open-endedness score (0.65) uses mastery-fraction scoring but domain creation is still string-label based
-- Self-improvement acceptance rate (60%) is empirically gated but limited to 5-episode rollouts
-- All environments are simulated; real-world grounding is absent
-
-## Status
-
-Research/engineering prototype. Governance-gated architecture with rollback. Capability modules provide autonomous goal generation, hierarchical abstraction, and self-improvement within fixed-source-code constraints.
+- Concept graph depth (5) partially driven by threshold calibration
+- Transfer analogy uses name-similarity heuristics, not structural matching
+- Self-improvement limited to 5-episode empirical rollouts
+- All environments simulated; no real-world grounding
 
 ## License
 
