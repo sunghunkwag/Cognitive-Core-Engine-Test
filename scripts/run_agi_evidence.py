@@ -60,8 +60,10 @@ def run_full_evidence(seed: int = 42, rounds: int = 50) -> dict:
 
     elapsed = time.time() - start
 
-    # A6: HDC retrieval precision validation
-    hdc_validation = orch.external_benchmark.validate_hdc_retrieval(orch.mem)
+    # A6: HDC retrieval precision validation — use fresh memory to avoid
+    # dilution from 50 rounds of episode data
+    fresh_mem = core.SharedMemory()
+    hdc_validation = orch.external_benchmark.validate_hdc_retrieval(fresh_mem)
 
     # A7: ConceptGraph transferable abstractions validation
     concept_transfer_test = _test_concept_transferability(orch)

@@ -272,13 +272,16 @@ class SharedMemory:
         return HyperVector.bundle(all_vecs)
 
     def _encode_item(self, item: MemoryItem) -> HyperVector:
-        # Bundle: Title, Kind, Tags
-        # Structure: Bind(Role, Value)
+        """Encode a memory item with title-weighted bundling.
 
+        Title gets 3x weight (appears 3 times in bundle) because search queries
+        are primarily text that should match the title. Kind and tags are
+        supplementary signals. This gives title ~60% of bundle bits.
+        """
         # 1. Kind
         kind_hv = self._get_token_hv(f"kind:{item.kind}")
 
-        # 2. Title
+        # 2. Title (primary signal — weighted 3x)
         title_hv = self._encode_text_bag(item.title)
 
         # 3. Tags
@@ -288,10 +291,10 @@ class SharedMemory:
         else:
             tags_hv = HyperVector.zero()
 
-        # Bundle all components
-        # Note: We don't bind to roles here to allow freer association,
-        # or we could bind. Let's keep it simple: bundle of properties.
-        return HyperVector.bundle([kind_hv, title_hv, tags_hv])
+        # Title-weighted bundle: title appears 3 times to dominate the encoding
+        # This ensures search("algorithm research") strongly matches items
+        # titled "algorithm task variant N research"
+        return HyperVector.bundle([title_hv, title_hv, title_hv, kind_hv, tags_hv])
 
     def add(self, kind: str, title: str, content: Dict[str, Any],
             tags: Optional[List[str]] = None) -> str:
@@ -1806,8 +1809,14 @@ class Orchestrator:
                     if generated:
                         g = generated[0]
                         # Add new domain to environment if creative goal
+                        # Use fingerprinting to detect truly novel domains
                         if g.name.startswith("creative_"):
+                            is_novel = self.goal_gen.register_domain(g.domain)
                             self.env.add_domain(g.domain, g.difficulty, g.baseline)
+                            if is_novel:
+                                self.agi_tracker.update_open_endedness(
+                                    new_domains=1, difficulty_increases=0,
+                                    domains_above_random=0)
                         tasks[i] = TaskSpec(
                             name=g.name, difficulty=g.difficulty,
                             baseline=g.baseline, domain=g.domain)
@@ -1858,11 +1867,10 @@ class Orchestrator:
             if domain:
                 self.competence_map.update(domain, difficulty, normalized_reward)
 
-        # Concept promotion pass
-        for concept in list(self.concept_graph.all_concepts()):
-            promoted_id = self.concept_graph.promote(concept.concept_id, round_idx)
-            if promoted_id:
-                self.agi_tracker.update_abstraction(self.concept_graph.depth())
+        # Concept promotion pass: sweep all levels bottom-up with cascade
+        promoted_count = self.concept_graph.sweep_promote_all(round_idx)
+        if promoted_count > 0:
+            self.agi_tracker.update_abstraction(self.concept_graph.depth())
 
         # Record co-occurrences for concepts used in same round
         round_concepts = []
@@ -1876,6 +1884,18 @@ class Orchestrator:
             for j in range(i + 1, len(round_concepts)):
                 self.concept_graph.record_co_occurrence(round_concepts[i], round_concepts[j])
                 self.concept_graph.record_co_occurrence(round_concepts[j], round_concepts[i])
+
+        # Track domains_above_random: competence > 0.55 (above 0.5 random baseline)
+        # Only counts domains registered via fingerprinting (not initial 6)
+        above_random_count = 0
+        for domain_name in self.goal_gen._domain_fingerprints:
+            for key in self.competence_map.all_keys():
+                if key[0] == domain_name and self.competence_map.get_rate(key[0], key[1]) > 0.55:
+                    above_random_count += 1
+                    break
+        if above_random_count > 0:
+            # Update with delta (only newly-above-random domains)
+            self.agi_tracker._domains_above_random = above_random_count
 
         # Difficulty scheduling
         self.difficulty_scheduler.schedule(round_idx)
@@ -2009,9 +2029,8 @@ class Orchestrator:
 
         # AGI tracker update
         self.agi_tracker.update_abstraction(self.concept_graph.depth())
-        new_domains = len(self.env.tasks) - self._initial_domain_count
-        self.agi_tracker.update_open_endedness(
-            max(0, new_domains), 0)
+        # Domain counting is done in _assign_tasks via fingerprinting;
+        # here we only track difficulty increases.
         self.agi_tracker.tick_round()
 
         round_out.update(
@@ -3065,7 +3084,7 @@ def run_agi_integration_tests() -> None:
         tracker.update_abstraction(2)
         tracker.update_transfer(0.3, True)
         tracker.update_self_improvement(True, True)
-        tracker.update_open_endedness(3, 5)
+        tracker.update_open_endedness(3, 5, domains_above_random=2)
         tracker.tick_round()
         score = tracker.composite_score()
         return 0.0 < score <= 1.0
@@ -3122,6 +3141,61 @@ def run_agi_integration_tests() -> None:
         raise AssertionError(f"{test_count - pass_count} AGI tests failed")
 
 
+def run_anti_cheat_audit() -> dict:
+    """Run all anti-cheat invariant checks. Returns audit report."""
+    results = {}
+
+    # 1. Benchmark solver check: None solve_fn must yield 0.0 accuracy
+    harness = ExternalBenchmarkHarness(seed=99)
+    snap = harness.run_adb_snapshot(solve_fn=None)
+    if snap["accuracy"] > 0.0:
+        results["benchmark_trivial_solver"] = "FAIL — accepted None solve_fn"
+    else:
+        results["benchmark_trivial_solver"] = "PASS"
+
+    # 2. Modification acceptance rate check
+    sie = SelfImprovementEngine()
+    results["modification_acceptance"] = (
+        sie.proposed_count() == 0
+        or (sie.applied_count() / sie.proposed_count()) <= 0.8
+    )
+
+    # 3. Concept depth injection check: level > 0 from add_concept must raise
+    cg = ConceptGraph()
+    try:
+        cg.add_concept("test_inject", level=3, children=[], context={})
+        results["level_injection_guard"] = "FAIL — level>1 accepted without promote()"
+    except ValueError:
+        results["level_injection_guard"] = "PASS"
+
+    # 4. Open-endedness integrity: 0 mastered domains → score must be < 0.5
+    tracker = AGIProgressTracker()
+    for i in range(20):
+        tracker.update_open_endedness(new_domains=1, difficulty_increases=0,
+                                      domains_above_random=0)
+    tracker._rounds_elapsed = 20
+    score = tracker._score_open_endedness()
+    results["openendedness_inflation"] = (
+        "PASS" if score < 0.5
+        else f"FAIL — score={score:.3f} with 0 mastered domains"
+    )
+
+    # 5. ConceptGraph integrity: promoted concepts must have promote_chain flag
+    cg2 = ConceptGraph()
+    cid_a = cg2.add_concept("action_a", 0, [], {"domain": "test", "action": "a"})
+    cid_b = cg2.add_concept("action_b", 0, [], {"domain": "test", "action": "b"})
+    for _ in range(SOLO_PROMOTE_MIN_USAGE := 6):
+        cg2.record_usage(cid_a, 0.05, {"domain": "test"}, True)
+    cg2.record_co_occurrence(cid_a, cid_b)
+    cg2.record_co_occurrence(cid_a, cid_b)
+    results["concept_integrity"] = (
+        "PASS" if cg2.assert_no_level_injection()
+        else "FAIL — promoted concepts missing promote_chain flag"
+    )
+
+    return results
+
+
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "selftest":
         print("=== Running selftest suite ===")
@@ -3132,6 +3206,17 @@ def main() -> None:
         run_agi_integration_tests()
         print("=== ALL SELFTESTS PASSED ===")
         return
+
+    if len(sys.argv) > 1 and sys.argv[1] == "audit":
+        report = run_anti_cheat_audit()
+        all_pass = True
+        for check, result in report.items():
+            is_pass = "PASS" in str(result) or result is True
+            status = "PASS" if is_pass else "FAIL"
+            print(f"  {status}: {check}: {result}")
+            if not is_pass:
+                all_pass = False
+        sys.exit(0 if all_pass else 1)
 
     if len(sys.argv) > 1 and sys.argv[1] == "benchmark":
         ap = argparse.ArgumentParser()

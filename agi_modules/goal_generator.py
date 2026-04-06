@@ -84,6 +84,33 @@ class GoalGenerator:
         self._stagnating = False
         self._generated_domains: set = set()
         self._previous_goals: List[str] = []
+        # Domain fingerprint registry: maps domain_name -> frozenset of structural tokens.
+        # Two domains with the same fingerprint are considered duplicates.
+        self._domain_fingerprints: Dict[str, frozenset] = {}
+
+    def _domain_fingerprint(self, domain: str) -> frozenset:
+        """Compute structural fingerprint for a domain name.
+
+        Why: prevents gaming open-endedness by creating 'new' domains that are
+        just relabeled versions of existing ones.
+        A domain's fingerprint is the sorted set of its normalized base tokens.
+        """
+        normalized = domain.lower().replace("-", "+").replace("_", "+").replace(" ", "+")
+        tokens = frozenset(t for t in normalized.split("+") if t)
+        return tokens
+
+    def register_domain(self, domain: str) -> bool:
+        """Register a domain, returning True only if it's structurally novel.
+
+        Why: the open-endedness score should only count genuinely new domains,
+        not string-label variants of existing ones.
+        Fallback: returns False if fingerprint already exists.
+        """
+        fp = self._domain_fingerprint(domain)
+        if fp in self._domain_fingerprints.values():
+            return False
+        self._domain_fingerprints[domain] = fp
+        return True
 
     def set_stagnating(self, stagnating: bool) -> None:
         """Signal stagnation state to adjust strategy weights.

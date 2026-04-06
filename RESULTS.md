@@ -5,37 +5,37 @@
 | Round | Generalization | Autonomy | Self-Improvement | Abstraction | Open-Endedness | Composite |
 |-------|---------------|----------|-----------------|-------------|---------------|-----------|
 |   0 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.001 |
-|   5 | 0.000 | 0.500 | 1.000 | 0.200 | 1.000 | 0.158 |
-|  10 | 0.000 | 0.650 | 1.000 | 0.200 | 1.000 | 0.167 |
-|  15 | 0.000 | 0.667 | 1.000 | 0.200 | 1.000 | 0.168 |
-|  20 | 0.083 | 0.675 | 1.000 | 0.200 | 1.000 | 0.407 |
-|  25 | 0.087 | 0.720 | 1.000 | 0.200 | 1.000 | 0.417 |
-|  30 | 0.116 | 0.733 | 1.000 | 0.200 | 1.000 | 0.442 |
-|  35 | 0.146 | 0.714 | 1.000 | 0.200 | 1.000 | 0.461 |
-|  40 | 0.146 | 0.700 | 1.000 | 0.200 | 1.000 | 0.459 |
-|  45 | 0.188 | 0.678 | 1.000 | 0.200 | 1.000 | 0.480 |
+|   5 | 0.004 | 0.500 | 1.000 | 0.600 | 0.000 | 0.064 |
+|  10 | 0.011 | 0.650 | 1.000 | 1.000 | 0.000 | 0.094 |
+|  15 | 0.015 | 0.700 | 1.000 | 1.000 | 0.233 | 0.301 |
+|  20 | 0.033 | 0.700 | 1.000 | 1.000 | 0.400 | 0.391 |
+|  25 | 0.045 | 0.700 | 1.000 | 1.000 | 0.525 | 0.439 |
+|  30 | 0.061 | 0.733 | 1.000 | 1.000 | 0.612 | 0.487 |
+|  35 | 0.082 | 0.743 | 1.000 | 1.000 | 0.700 | 0.532 |
+|  40 | 0.104 | 0.713 | 1.000 | 1.000 | 0.700 | 0.554 |
+|  45 | 0.123 | 0.689 | 1.000 | 1.000 | 0.700 | 0.568 |
 
 ## 2. Autonomous Goal Generation Evidence
 
 - Rounds with autonomous goals: 49/50
-- Final autonomy score: 0.694
+- Final autonomy score: 0.704
 
 ## 3. Concept Formation Evidence
 
-- Final concept count: 193
-- Final concept depth: 1
-- Depth over time: [(0, 0), (10, 1), (20, 1), (30, 1), (40, 1)]
-- Promoted concepts: 66
-- Multi-domain concepts (A7): 0
+- Final concept count: 515
+- Final concept depth: 5
+- Depth over time: [(0, 0), (10, 5), (20, 5), (30, 5), (40, 5)]
+- Promoted concepts: 252
+- Multi-domain concepts (A7): 172
 
 ## 4. Transfer Learning Evidence
 
-- Transfer attempts: 26
-  - Round 0: algorithm -> strategy (analogy=0.000)
-  - Round 4: algorithm -> strategy (analogy=0.000)
-  - Round 5: strategy+theory+algorithm -> strategy (analogy=0.033)
-  - Round 6: theory -> strategy (analogy=0.033)
-  - Round 7: engineering -> strategy (analogy=0.000)
+- Transfer attempts: 10
+  - Round 0: algorithm -> strategy (analogy=0.244)
+  - Round 5: theory+algorithm -> strategy (analogy=0.285)
+  - Round 10: theory+algorithm+theory+algorithm+theory+theory -> strategy (analogy=0.253)
+  - Round 15: theory+algorithm+theory+theory+verification -> strategy (analogy=0.266)
+  - Round 20: strategy+engineering -> strategy (analogy=0.489)
 
 ## 5. Self-Improvement Evidence
 
@@ -44,17 +44,17 @@
 
 ## 6. Open-Ended Learning Evidence
 
-- Total domains (start=6): 42
-- Open-endedness score: 1.000
+- Total domains (start=6): 48
+- Open-endedness score: 0.700
 
 ## 7. External Validation
 
 ### HDC Retrieval Precision (A6)
-- Mean precision: 0.333
-- Passes threshold (0.6): False
-  - algorithm: 0.000
-  - systems: 0.200
-  - theory: 0.800
+- Mean precision: 1.000
+- Passes threshold (0.6): True
+  - algorithm: 1.000
+  - systems: 1.000
+  - theory: 1.000
 
 ### SelfModel Novel Task Calibration (A9)
 - High confidence on novel tasks: 0
@@ -63,19 +63,19 @@
 
 ### External Benchmark Scores (A5)
 - Snapshots taken: 8
-- First: 1.000, Last: 1.000
+- First: 0.000, Last: 0.000
 
 ### Overfitting Check (A2)
-- Is overfitting: True
+- Is overfitting: False
 
 ## 8. Ablation Comparison (A10)
 
 | Configuration | Final Composite | Mean Reward (last 10) | Concept Depth | Domains |
 |--------------|----------------|----------------------|---------------|---------|
-| **Full AGI system** | 0.4996 | 0.4584 | 1 | 42 |
-| No new modules (legacy only) | 0.0029 | 0.1067 | 1 | 6 |
-| All modules, GoalGenerator disabled | 0.0340 | 0.1389 | 1 | 6 |
-| All modules, TransferEngine disabled | 0.1692 | 0.4584 | 1 | 42 |
+| **Full AGI system** | 0.5705 | 0.4858 | 5 | 48 |
+| No new modules (legacy only) | 0.0040 | 0.0612 | 5 | 6 |
+| All modules, GoalGenerator disabled | 0.0451 | 0.0978 | 4 | 6 |
+| All modules, TransferEngine disabled | 0.2180 | 0.4858 | 5 | 48 |
 
 ## What This Proves
 
@@ -97,4 +97,4 @@
 - ConceptGraph depth is partially driven by threshold calibration
 
 ---
-Seed: 42, Rounds: 50, Time: 27.8s
+Seed: 42, Rounds: 50, Time: 36.9s
