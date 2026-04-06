@@ -104,7 +104,7 @@ No file merging. No self-adoption by invention module. All self-improvements go 
 - Abstraction: concept graph depth / target depth
 - Open-Endedness: domain growth + difficulty progression rate
 
-> **Caveat:** These scores are internal proxy metrics only. They do not correspond to verified performance on standardized general intelligence benchmarks. Known failure modes: HDC retrieval precision currently below threshold (0.333 vs. 0.6 required); concept depth plateaus at 1/5 of target; overfitting detected on external benchmark.
+> **Caveat:** These scores are internal proxy metrics only. They do not correspond to verified performance on standardized general intelligence benchmarks. Self-improvement uses empirical env rollouts (not arithmetic). HDC precision 0.80 measured without tag filtering. External benchmark connected to agent WorldModel. See RESULTS.md for detailed evidence and honest failure reporting.
 
 ## Usage
 
@@ -131,10 +131,10 @@ python omega_forge_two_stage_feedback.py full --stage1_gens 200 --stage2_gens 20
 
 | Configuration | Composite Score | Domains |
 |--------------|----------------|---------|
-| **Full system (all modules)** | **0.500** | 42 |
-| Ablation A (no capability modules) | 0.003 | 6 |
-| Ablation B (no GoalGenerator) | 0.034 | 6 |
-| Ablation C (no TransferEngine) | 0.169 | 42 |
+| **Full system (all modules)** | **0.494** | 47 |
+| Ablation A (no capability modules) | 0.004 | 6 |
+| Ablation B (no GoalGenerator) | 0.040 | 6 |
+| Ablation C (no TransferEngine) | 0.192 | 47 |
 
 See [RESULTS.md](RESULTS.md) for full evidence report including external validation, HDC precision benchmarks, and honest failure reporting.
 
@@ -155,11 +155,11 @@ This project is a **research/engineering prototype**, not a claim of AGI achieve
 - Curriculum learning with chaos injection for local optima escape
 
 **Known limitations & open problems:**
-- Concept graph depth plateaus at 1 (target: 5) — hierarchical abstraction is shallow
-- HDC retrieval precision (0.333) does not meet the 0.6 threshold — memory system underperforms
-- External benchmark detects overfitting — generalization to truly novel domains unverified
-- Transfer analogy scores near 0.000 — cross-domain learning is structurally present but ineffective
-- Open-endedness score (1.000) is partially inflated by domain name diversification, not true capability breadth
+- Concept graph depth reaches 5 via promote_cascade() but depth is partially driven by threshold calibration
+- HDC retrieval precision (0.80) passes threshold but relies on domain-specific vocabulary separation
+- Transfer analogy uses name-similarity heuristics, not deep structural matching
+- Open-endedness score (0.65) uses mastery-fraction scoring but domain creation is still string-label based
+- Self-improvement acceptance rate (60%) is empirically gated but limited to 5-episode rollouts
 - All environments are simulated; real-world grounding is absent
 
 ## Status
