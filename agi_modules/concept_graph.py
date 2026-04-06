@@ -17,7 +17,14 @@ from typing import Any, Dict, List, Optional, Set
 # Promotion thresholds (calibrated for env rewards ~0.02-0.15)
 PROMOTE_MIN_USAGE = 3       # Minimum uses before promotion considered
 PROMOTE_MIN_REWARD = 0.03   # Minimum avg reward for promotion (env baseline)
-CO_OCCUR_WINDOW = 2         # Co-occurrence count required for bundling
+# Co-occurrence window: 1 for L0→L1 (easy first rung), 2 for higher levels
+CO_OCCUR_WINDOW_L0 = 1      # Low bar for first abstraction layer
+CO_OCCUR_WINDOW_DEFAULT = 2  # Standard bar for higher layers
+
+# Solo-promotion: a concept with high usage+reward can promote by itself
+SOLO_PROMOTE_MIN_USAGE = 6   # Must be well-used to self-promote
+SOLO_PROMOTE_MIN_REWARD = 0.04  # Must be reliably successful
+SOLO_PROMOTE_MIN_CONTEXTS = 2   # Must have succeeded in multiple contexts
 
 # Pruning thresholds
 PRUNE_MIN_USAGE = 3         # Below this usage count, eligible for pruning
@@ -28,6 +35,9 @@ TARGET_DEPTH = 5
 
 # Maximum concept levels
 MAX_LEVEL = 5
+
+# Level-injection guard: concepts above this level MUST come from promote()
+MAX_EXTERNAL_LEVEL = 0      # add_concept() from outside only creates L0
 
 
 def _concept_hash(name: str, children: List[str]) -> str:
@@ -56,13 +66,14 @@ class ConceptNode:
     usage_count: int = 0
     avg_reward: float = 0.0
     _total_reward: float = 0.0
+    _promoted_via: str = ""  # tracks how this node was created
 
 
 class ConceptGraph:
     """Stores and manages hierarchical concept abstractions.
 
     Why it exists: without concept formation, the agent operates on flat
-    action→reward mappings with no ability to generalize or compose strategies.
+    action->reward mappings with no ability to generalize or compose strategies.
 
     Fallback: empty graph returns sensible defaults (depth=0, no promotions).
     """
@@ -73,12 +84,21 @@ class ConceptGraph:
 
     def add_concept(self, name: str, level: int, children: List[str],
                     context: Dict[str, Any],
-                    creation_round: int = 0) -> str:
+                    creation_round: int = 0,
+                    _internal_promote: bool = False) -> str:
         """Create a new ConceptNode, deduplicating by children combo.
 
         Why: builds the concept hierarchy from observed action patterns.
         Fallback: returns existing concept_id if duplicate detected.
+        Raises ValueError if level > MAX_EXTERNAL_LEVEL without _internal_promote flag.
         """
+        # Level-injection guard: external callers cannot create level > 0
+        if level > MAX_EXTERNAL_LEVEL and not _internal_promote:
+            raise ValueError(
+                f"Level {level} concepts must be created via promote(), not add_concept(). "
+                f"External add_concept() is limited to level <= {MAX_EXTERNAL_LEVEL}."
+            )
+
         concept_id = _concept_hash(name, children)
 
         # Deduplicate
@@ -93,6 +113,8 @@ class ConceptGraph:
             success_contexts=[context] if context else [],
             creation_round=creation_round,
         )
+        if _internal_promote:
+            node._promoted_via = "promote_chain"
         self._nodes[concept_id] = node
         return concept_id
 
@@ -113,7 +135,6 @@ class ConceptGraph:
 
         if success:
             node.success_contexts.append(context)
-            # Trim to prevent unbounded growth
             if len(node.success_contexts) > 50:
                 node.success_contexts = node.success_contexts[-50:]
         else:
@@ -135,8 +156,19 @@ class ConceptGraph:
             self._co_occurrences[concept_a].get(concept_b, 0) + 1
         )
 
+    def _co_occur_threshold(self, level: int) -> int:
+        """Return co-occurrence threshold for a given concept level.
+
+        Why: L0->L1 promotion is easy (window=1) to bootstrap the hierarchy;
+        higher levels need more evidence.
+        """
+        if level <= 0:
+            return CO_OCCUR_WINDOW_L0
+        return CO_OCCUR_WINDOW_DEFAULT
+
     def promote(self, concept_id: str, current_round: int = 0) -> Optional[str]:
-        """Promote a concept to a higher level by bundling with co-occurring peers.
+        """Promote a concept to a higher level by bundling with co-occurring peers,
+        or via solo-promotion if the concept is strong enough on its own.
 
         Why: builds abstraction hierarchy — successful concept combos become strategies.
         Fallback: returns None if promotion criteria not met.
@@ -150,35 +182,136 @@ class ConceptGraph:
         if node.avg_reward < PROMOTE_MIN_REWARD:
             return None
 
+        threshold = self._co_occur_threshold(node.level)
+
         # Find co-occurring concepts at the same level
         co_map = self._co_occurrences.get(concept_id, {})
         partners = [
             cid for cid, count in co_map.items()
-            if count >= CO_OCCUR_WINDOW
+            if count >= threshold
             and cid in self._nodes
             and self._nodes[cid].level == node.level
             and self._nodes[cid].avg_reward >= PROMOTE_MIN_REWARD
         ]
 
-        if not partners:
-            return None
+        if partners:
+            # Bundle with top co-occurring partner
+            partner_id = max(partners, key=lambda c: co_map[c])
+            partner = self._nodes[partner_id]
 
-        # Bundle with top co-occurring partner
-        partner_id = max(partners, key=lambda c: co_map[c])
-        partner = self._nodes[partner_id]
+            new_level = node.level + 1
+            new_name = f"L{new_level}:{node.name}+{partner.name}"
+            children = [concept_id, partner_id]
 
-        new_level = node.level + 1
-        new_name = f"L{new_level}:{node.name}+{partner.name}"
-        children = [concept_id, partner_id]
+            merged_context = {
+                "source_concepts": [node.name, partner.name],
+                "promotion_round": current_round,
+                "promotion_type": "co_occurrence",
+            }
+            # Propagate parent contexts to child
+            for ctx in node.success_contexts[:5]:
+                merged_context.setdefault("domains", [])
+                if ctx.get("domain"):
+                    merged_context["domains"].append(ctx["domain"])
 
-        # Merge contexts
-        merged_context = {
-            "source_concepts": [node.name, partner.name],
-            "promotion_round": current_round,
-        }
+            new_id = self.add_concept(new_name, new_level, children,
+                                      merged_context, current_round,
+                                      _internal_promote=True)
+            # Seed the new concept with usage from parents
+            new_node = self._nodes.get(new_id)
+            if new_node and new_node.usage_count == 0:
+                avg_parent_reward = (node.avg_reward + partner.avg_reward) / 2
+                new_node.usage_count = min(node.usage_count, partner.usage_count)
+                new_node.avg_reward = avg_parent_reward
+                new_node._total_reward = avg_parent_reward * new_node.usage_count
+                # Inherit success contexts from parents
+                new_node.success_contexts.extend(node.success_contexts[:10])
+                new_node.success_contexts.extend(partner.success_contexts[:10])
+            return new_id
 
-        return self.add_concept(new_name, new_level, children,
-                                merged_context, current_round)
+        # Solo-promotion fallback: a well-used concept with diverse contexts
+        if (node.usage_count >= SOLO_PROMOTE_MIN_USAGE
+                and node.avg_reward >= SOLO_PROMOTE_MIN_REWARD
+                and len(node.success_contexts) >= SOLO_PROMOTE_MIN_CONTEXTS):
+            new_level = node.level + 1
+            new_name = f"L{new_level}:solo:{node.name}"
+            children = [concept_id]
+
+            solo_context = {
+                "source_concepts": [node.name],
+                "promotion_round": current_round,
+                "promotion_type": "solo",
+            }
+            new_id = self.add_concept(new_name, new_level, children,
+                                      solo_context, current_round,
+                                      _internal_promote=True)
+            new_node = self._nodes.get(new_id)
+            if new_node and new_node.usage_count == 0:
+                new_node.usage_count = node.usage_count // 2
+                new_node.avg_reward = node.avg_reward
+                new_node._total_reward = node.avg_reward * new_node.usage_count
+                new_node.success_contexts.extend(node.success_contexts[:15])
+            return new_id
+
+        return None
+
+    def promote_cascade(self, current_round: int = 0) -> int:
+        """Attempt promotion on ALL eligible concepts at every level, bottom-up.
+
+        Why: a single promote() call only promotes one concept. This sweeps the
+        entire graph so that L0 promotions create L1 nodes which can then be
+        promoted to L2 in the same sweep, etc.
+        Fallback: returns 0 if nothing promotes.
+        """
+        total_promoted = 0
+        for level in range(MAX_LEVEL):
+            candidates = [n for n in self._nodes.values() if n.level == level]
+            for node in candidates:
+                result = self.promote(node.concept_id, current_round)
+                if result:
+                    total_promoted += 1
+        return total_promoted
+
+    def sweep_promote_all(self, current_round: int = 0, max_sweeps: int = 3) -> int:
+        """Run promote_cascade repeatedly until no new promotions occur.
+
+        Why: a single cascade may create L1 nodes that become promotable to L2
+        only after co-occurrence data propagates. Multiple sweeps ensure the
+        hierarchy builds to its natural depth.
+        Fallback: returns 0 if nothing promotes. Bounded by max_sweeps.
+        """
+        total = 0
+        for _ in range(max_sweeps):
+            promoted = self.promote_cascade(current_round)
+            if promoted == 0:
+                break
+            total += promoted
+            # Propagate co-occurrences upward: newly created higher-level
+            # concepts inherit co-occurrences from their children
+            self._propagate_co_occurrences()
+        return total
+
+    def _propagate_co_occurrences(self) -> None:
+        """Propagate co-occurrence data from children to parent concepts.
+
+        Why: when L0 concepts A and B co-occur, and both are children of L1
+        concept X, then X should co-occur with any other L1 concept whose
+        children also co-occurred. This enables multi-level promotion.
+        """
+        for node in list(self._nodes.values()):
+            if not node.children:
+                continue
+            # For each child, find what the child co-occurred with
+            for child_id in node.children:
+                child_co = self._co_occurrences.get(child_id, {})
+                for partner_child_id, count in child_co.items():
+                    # Find the parent of this partner child
+                    for other_node in self._nodes.values():
+                        if (other_node.concept_id != node.concept_id
+                                and other_node.level == node.level
+                                and partner_child_id in other_node.children):
+                            self.record_co_occurrence(
+                                node.concept_id, other_node.concept_id)
 
     def abstract(self, concept_id: str) -> Dict[str, Any]:
         """Return abstract representation of a concept's transfer radius.
@@ -215,30 +348,26 @@ class ConceptGraph:
         """Find if source concept structure could apply in target domain.
 
         Why: enables transfer learning by reusing proven abstractions.
-        Fallback: returns None if no viable analogy found.
+        Fallback: returns None if source concept doesn't exist.
+        Relaxed: a concept with ANY success context can be analogized (not just 2+ domains).
         """
         source = self._nodes.get(source_concept_id)
         if source is None:
             return None
 
-        # Check if source has succeeded in diverse contexts
-        source_domains = {
-            str(ctx.get("domain", ""))
-            for ctx in source.success_contexts
-        }
+        # Relaxed: allow analogy even for single-domain concepts (the transfer
+        # engine's rollback mechanism handles negative transfer).
+        if not source.success_contexts:
+            return None
 
-        if len(source_domains) < 2:
-            return None  # Not general enough to transfer
-
-        # Create adapted concept for target domain
-        adapted_name = f"analogy:{source.name}→{target_domain}"
+        adapted_name = f"analogy:{source.name}->{target_domain}"
         context = {
             "domain": target_domain,
             "source_concept": source_concept_id,
             "analogy": True,
         }
         return self.add_concept(
-            adapted_name, source.level, source.children,
+            adapted_name, 0, [],  # analogized concepts start at L0
             context, source.creation_round
         )
 
@@ -252,7 +381,7 @@ class ConceptGraph:
         to_remove = [
             cid for cid, node in self._nodes.items()
             if node.usage_count < min_usage and node.avg_reward < min_reward
-            and node.usage_count <= 10  # Never prune well-used concepts
+            and node.usage_count <= 10
         ]
 
         for cid in to_remove:
@@ -302,3 +431,16 @@ class ConceptGraph:
         Fallback: returns 0.
         """
         return len(self._nodes)
+
+    # --- Integrity checks (anti-cheat) ---
+
+    def assert_no_level_injection(self) -> bool:
+        """Verify that all concepts above level 0 were created via promote().
+
+        Why: prevents gaming depth by directly injecting high-level concepts.
+        Returns True if integrity holds.
+        """
+        for node in self._nodes.values():
+            if node.level > 0 and node._promoted_via != "promote_chain":
+                return False
+        return True

@@ -242,16 +242,22 @@ class AGIProgressTracker:
         return min(1.0, self._concept_depth / TARGET_ABSTRACTION_DEPTH)
 
     def _score_open_endedness(self) -> float:
-        """OPEN-ENDEDNESS: growth rate of domains and difficulties.
+        """OPEN-ENDEDNESS: domain mastery fraction (70%) + difficulty rate (30%).
 
-        Why: measures ability to expand beyond initial problem space.
-        Fallback: returns 0.0 if no growth observed.
+        Why: counting new domain labels alone is easily gamed (string-label inflation).
+        This scoring requires domains_above_random > 0 (actual performance) to
+        contribute. Difficulty increases contribute 30% as a growth signal.
+        Fallback: returns 0.0 if no data.
         """
         if self._rounds_elapsed == 0:
             return 0.0
-        growth_rate = (
-            (self._new_domains + self._difficulty_increases) /
-            self._rounds_elapsed
-        )
-        # Normalize: expect ~0.5 growth events per round for score 1.0
-        return min(1.0, growth_rate / 0.5)
+
+        # Component 1 (70%): fraction of new domains where above-random performance
+        mastery_fraction = 0.0
+        if self._new_domains > 0:
+            mastery_fraction = self._domains_above_random / self._new_domains
+
+        # Component 2 (30%): difficulty increase rate, capped at 1.0
+        diff_rate = min(1.0, self._difficulty_increases / max(1, self._rounds_elapsed) / 0.3)
+
+        return min(1.0, 0.7 * mastery_fraction + 0.3 * diff_rate)
