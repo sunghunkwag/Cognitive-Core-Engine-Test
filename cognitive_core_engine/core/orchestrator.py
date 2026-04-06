@@ -674,6 +674,14 @@ class Orchestrator:
         stagnation_override: Optional[bool] = None,
         force_meta_proposal: bool = False,
     ) -> Dict[str, Any]:
+        # ── Governance anchor integrity check (every cycle) ──
+        # Halt if the immutable objective anchor has been tampered with.
+        if not self.self_model.verify_anchor_integrity():
+            raise RuntimeError(
+                "GOVERNANCE HALT: Immutable objective anchor integrity check "
+                "failed at start of run_recursive_cycle. Possible RSI bypass attempt."
+            )
+
         round_out = self.run_round(round_idx)
         self._record_round_rewards(round_out["results"])
 

@@ -46,6 +46,20 @@ class HyperVector:
         """XOR binding operation."""
         return HyperVector(self.val ^ other.val)
 
+    def fractional_bind(self, other: HyperVector, role_index: int) -> HyperVector:
+        """Structure-preserving binding using permute-then-XOR (SDM principle).
+
+        Unlike naive XOR which causes dimension collapse when binding many
+        vectors, fractional binding permutes `other` by a unique role_index
+        before XOR. This preserves each component's structural information
+        in a distinct subspace of the hypervector, preventing the bound
+        result from collapsing into noise.
+
+        role_index: unique integer per component being bound (0, 1, 2, ...)
+        """
+        shifted = other.permute(role_index * 7 + 1)  # large prime-ish stride
+        return HyperVector(self.val ^ shifted.val)
+
     def permute(self, shifts: int = 1) -> HyperVector:
         """Cyclic shift."""
         shifts %= self.DIM
