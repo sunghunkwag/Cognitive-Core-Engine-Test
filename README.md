@@ -1,8 +1,8 @@
 # Cognitive-Core-Engine-Test
 
-Multi-module architecture integrating fixed cognitive core with invention, governance, and capability layers.
+Multi-module architecture integrating fixed cognitive core with invention, governance, and capability layers — featuring a self-referential meta-simulation model with anti-wireheading defense.
 
-> **Scope Notice:** This is a research prototype demonstrating cognitive mechanisms — autonomous goal generation, hierarchical abstraction, intrinsic motivation, and governance-gated self-modification — within a simulated environment.
+> **Scope Notice:** This is a research prototype demonstrating cognitive mechanisms — autonomous goal generation, hierarchical abstraction, intrinsic motivation, recursive self-modeling, and governance-gated self-modification — within a simulated environment.
 
 ## Project Structure
 
@@ -49,7 +49,8 @@ agi_modules/                # Capability extension modules
   concept_graph.py            Hierarchical abstraction (L0-L5)
   hierarchical_planner.py     Multi-level planning via concept graph
   transfer_engine.py          Cross-domain transfer with rollback
-  self_model.py               Capability prediction, failure diagnosis
+  self_model.py               Legacy capability prediction (backward compat)
+  self_referential_model.py   Advanced self-referential meta-simulation
   difficulty_scheduler.py     Curriculum learning with chaos injection
   self_improvement.py         Empirical env-rollout parameter tuning
   agi_tracker.py              5-axis capability proxy scoring
@@ -62,24 +63,40 @@ scripts/
   run_results.py              Reproduce baseline evidence logs
   run_agi_evidence.py         50-round evidence with 3-way ablation
   verify_self_improvement.py  Self-improvement verification suite
-main.py                     # Entry point (replaces NON_RSI_AGI_CORE_v5.py)
+main.py                     # Entry point
 ```
 
-## Integration
+## Architecture
 
-### Call Chain
+### Core Call Chain
 
 `Orchestrator -> Omega (on stagnation) -> Governance (critic) -> Orchestrator (register/reject)`
 
-- **Contract A (GapSpec)**: Orchestrator -> Omega capability gap specification
-- **Contract B (CandidatePacket)**: Omega -> Governance -> Orchestrator artifact + evidence + verdict
+### Self-Referential Meta-Simulation Loop
+
+```
+Orchestrator.run_round()
+  for each agent:
+    |-- SelfReferentialModel.encode_self_referential_state()
+    |     Binds env observation + ZPD frontier + concept graph + active skills
+    |     into unified 10,000-bit hypervector via XOR binding
+    |-- SelfReferentialModel.detect_architectural_drift()
+    |     Cosine distance on HDC state history; critical drift -> governance rollback
+    |-- Agent.act_on_project()
+    |     Meta-rollout predicts BOTH next env state AND agent's own policy shift
+    |
+  Orchestrator.run_recursive_cycle()
+    |-- validate_metric_integrity()
+    |     Anti-wireheading gate: rejects self-improvement claims that lack
+    |     structural correlation or external benchmark confirmation
+    |-- Immutable objective anchor checked (read-only HDC vector)
+```
 
 ### Capability Extension
 
 ```
 Orchestrator.run_recursive_cycle()
   |-- GoalGenerator.generate()           [autonomous task creation]
-  |-- Agent.act_on_project()             [intrinsic reward blending]
   |-- CompetenceMap.update()             [competence tracking]
   |-- ConceptGraph.sweep_promote_all()   [hierarchical abstraction]
   |-- TransferEngine.transfer()          [cross-domain knowledge reuse]
@@ -91,16 +108,22 @@ Orchestrator.run_recursive_cycle()
 
 ## Technical Details
 
+**Self-Referential Model** (`self_referential_model.py`):
+- HDC state encoding: env hash XOR competence profile XOR concept structure XOR skill set
+- Recursive meta-rollout: dual simulation predicting env state AND internal policy shift
+- Architectural drift detection: cosine distance on unified state history (threshold 0.35)
+- Anti-wireheading: immutable objective anchor + metric integrity validation + decoupled evaluation
+
 **HDC Memory**: Title-weighted position-bound encoding, deterministic tie-breaking, similarity threshold 0.51, max 20,000 items.
 
 **World Model**: TD-learning with non-linear features, experience replay (200 samples), gamma 0.9, combined reward: extrinsic (0.6) + intrinsic (0.4).
 
-**Self-Improvement**: Empirical env.step() rollouts (5 baseline + 5 modified episodes), acceptance rate guard at 80% ceiling.
+**Self-Improvement**: Empirical env.step() rollouts (5 baseline + 5 modified episodes). Anti-wireheading gate rejects modifications exceeding MAX_CREDIBLE_LEAP (0.25) or lacking external benchmark correlation.
 
 **Capability Scoring** (geometric mean of 5 axes):
 - Generalization, Autonomy, Self-Improvement, Abstraction, Open-Endedness
 
-> **Caveat:** These are internal proxy metrics, not verified against standardized benchmarks. See RESULTS.md for honest failure reporting.
+> **Caveat:** These are internal proxy metrics. See RESULTS.md for honest failure reporting.
 
 ## Usage
 
@@ -126,22 +149,25 @@ python main.py benchmark --suite ADB_v1 --seed 0 --trials 20
 
 ## Evidence Summary
 
-50-round evidence run (seed=42):
+50-round evidence run (seed=42, with anti-wireheading active):
 
 | Configuration | Composite | Domains |
 |--------------|----------|---------|
-| **Full system** | **0.494** | 47 |
+| **Full system** | **0.088** | 46 |
 | Ablation A (no capability modules) | 0.004 | 6 |
-| Ablation B (no GoalGenerator) | 0.040 | 6 |
-| Ablation C (no TransferEngine) | 0.192 | 47 |
+| Ablation B (no GoalGenerator) | 0.010 | 6 |
+| Ablation C (no TransferEngine) | 0.042 | 46 |
+
+Self-improvement score = 0.0 reflects the anti-wireheading gate correctly rejecting modifications that lack external benchmark correlation. The lower composite vs earlier runs reflects honest, integrity-gated scoring.
 
 See [RESULTS.md](RESULTS.md) for full report.
 
 ## Scope & Limitations
 
+- Anti-wireheading gate may be overly conservative (self-improvement = 0.0)
 - Concept graph depth (5) partially driven by threshold calibration
 - Transfer analogy uses name-similarity heuristics, not structural matching
-- Self-improvement limited to 5-episode empirical rollouts
+- Meta-rollout confidence decays with depth; predictions beyond 3 steps are low-confidence
 - All environments simulated; no real-world grounding
 
 ## License
