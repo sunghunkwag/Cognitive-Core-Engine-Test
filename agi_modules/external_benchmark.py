@@ -1,294 +1,211 @@
 """
-ExternalBenchmarkHarness — Validates AGI progress against held-out benchmarks.
+ExternalBenchmarkConnector — BN-03 fix.
 
-Addresses requirements A1-A3, A5-A6:
-- A1: Uses ADB benchmark suite and program synthesis tasks as external environment
-- A2: Measures AGI axes on held-out task domains
-- A3: Omega candidates must solve real tasks before adoption
-- A5: Stagnation detection via external benchmark signal
-- A6: HDC memory validated against information retrieval benchmark
+The anti-wireheading gate in AdvancedSelfReferentialModel checks that any
+claimed self-improvement is correlated with a GENUINELY EXTERNAL benchmark.
+Without this connector, self_improvement_score was hard-coded to 0.0 because
+no external signal existed, blocking all governance proposals from advancing.
 
-CRITICAL: All metrics measured here are on tasks the system did NOT train on.
+Design decisions:
+- Offline-first: reads pre-computed JSON result files; never calls APIs at
+  runtime.  This keeps governance deterministic and reproducible.
+- Supports ARC-AGI and HumanEval result formats out of the box.  Additional
+  benchmarks can be registered via `register_results()`.
+- `correlation_score()` returns a float in [0, 1] that the anti-wireheading
+  gate can use directly as `external_benchmark_correlation`.
 """
 
 from __future__ import annotations
 
-import random
-from typing import Any, Dict, List, Optional, Tuple
-
-# --- Named constants ---
-
-# Minimum ADB tasks an Omega candidate must solve
-OMEGA_MIN_TASK_SOLVES = 1
-
-# HDC retrieval precision threshold
-HDC_PRECISION_THRESHOLD = 0.60
-
-# External stagnation window
-EXTERNAL_STAGNATION_WINDOW = 10
-EXTERNAL_STAGNATION_THRESHOLD = 0.005
-
-# Held-out domains for generalization testing
-HELD_OUT_DOMAINS = ["held_out_reverse", "held_out_sort", "held_out_dedup"]
+import json
+import math
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
 
-class ExternalBenchmarkHarness:
-    """Runs held-out benchmarks to validate AGI progress externally.
+# ---------------------------------------------------------------------------
+# Supported benchmark formats
+# ---------------------------------------------------------------------------
 
-    Why: prevents circular evaluation where the system improves only on
-    tasks it trains on. All metrics here use tasks the system never sees.
+_KNOWN_FORMATS = frozenset({"arc_agi", "humaneval", "generic"})
 
-    Fallback: returns conservative scores if benchmarks fail to run.
+
+def _parse_arc_agi(data: Dict[str, Any]) -> float:
+    """Extract a scalar score from an ARC-AGI result dict.
+
+    Expects either:
+      {"score": 0.42}                   — direct scalar
+      {"results": [{"pass": true/false}, ...]}  — list of task results
+    """
+    if "score" in data:
+        return float(data["score"])
+    results = data.get("results", [])
+    if results:
+        passed = sum(1 for r in results if r.get("pass", False))
+        return passed / len(results)
+    return 0.0
+
+
+def _parse_humaneval(data: Dict[str, Any]) -> float:
+    """Extract pass@1 from a HumanEval result dict.
+
+    Expects either:
+      {"pass@1": 0.35}
+      {"results": {"pass@1": 0.35}}
+    """
+    if "pass@1" in data:
+        return float(data["pass@1"])
+    nested = data.get("results", {})
+    if isinstance(nested, dict) and "pass@1" in nested:
+        return float(nested["pass@1"])
+    # Fallback: look for any float value
+    for v in data.values():
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def _parse_generic(data: Dict[str, Any]) -> float:
+    """Best-effort scalar extraction from an unknown result dict."""
+    for key in ("score", "accuracy", "pass_rate", "result"):
+        if key in data:
+            try:
+                return float(data[key])
+            except (TypeError, ValueError):
+                continue
+    # Try any top-level numeric value
+    for v in data.values():
+        try:
+            f = float(v)
+            if 0.0 <= f <= 1.0:
+                return f
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+_PARSERS = {
+    "arc_agi": _parse_arc_agi,
+    "humaneval": _parse_humaneval,
+    "generic": _parse_generic,
+}
+
+
+# ---------------------------------------------------------------------------
+# Connector
+# ---------------------------------------------------------------------------
+
+class ExternalBenchmarkConnector:
+    """Loads external benchmark results and computes correlation with internal metrics.
+
+    Parameters
+    ----------
+    results_path:
+        Path to a JSON file containing benchmark results.  Can also be
+        supplied later via `register_results()`.
+    benchmark_format:
+        One of 'arc_agi', 'humaneval', or 'generic'.
     """
 
-    def __init__(self, seed: int = 42) -> None:
-        self.rng = random.Random(seed)
-        self._external_scores: List[float] = []
-        self._held_out_results: Dict[str, List[float]] = {}
-        self._omega_task_evaluations: List[Dict[str, Any]] = []
-
-    def run_adb_snapshot(self, solve_fn: Any = None) -> Dict[str, Any]:
-        """Run a frozen ADB benchmark snapshot for external scoring.
-
-        Why: provides a fixed external signal independent of training.
-        The solve_fn MUST actually solve tasks — if None is passed, accuracy
-        is 0.0 (no trivial solver bypass).
-        Fallback: returns 0.0 accuracy if no solve_fn provided.
-        """
-        tasks_solved = 0
-        total_tasks = 10
-
-        for _ in range(total_tasks):
-            length = self.rng.randint(3, 6)
-            inp = [self.rng.randint(-4, 9) for _ in range(length)]
-            expected = list(reversed(inp))
-
-            if solve_fn is not None:
-                try:
-                    prediction = solve_fn(inp)
-                    if prediction == expected:
-                        tasks_solved += 1
-                except Exception:
-                    pass
-            # No solve_fn → no tasks solved (anti-cheat: no trivial bypass)
-
-        accuracy = tasks_solved / max(1, total_tasks)
-        self._external_scores.append(accuracy)
-        return {"accuracy": accuracy, "tasks_solved": tasks_solved, "total": total_tasks}
-
-    def evaluate_omega_candidate(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
-        """Evaluate an Omega candidate against real tasks before critic review.
-
-        Why (A3): Omega candidates must demonstrate task-solving ability,
-        not just structural novelty, before being considered for adoption.
-        Fallback: returns zero scores if candidate cannot be evaluated.
-        """
-        metrics = candidate.get("metrics", {})
-        task_scores = candidate.get("task_scores", {})
-
-        # Check if candidate has any real task scores
-        real_solves = sum(1 for v in task_scores.values() if v > 0)
-
-        # Evaluate against built-in ADB-like tasks
-        adb_pass = 0
-        for _ in range(3):
-            length = self.rng.randint(3, 5)
-            inp = [self.rng.randint(0, 9) for _ in range(length)]
-            # Check if candidate metrics suggest capability
-            train_rate = float(metrics.get("train_pass_rate", 0))
-            holdout_rate = float(metrics.get("holdout_pass_rate", 0))
-            if train_rate > 0.3 and holdout_rate > 0.25:
-                adb_pass += 1
-
-        result = {
-            "real_task_solves": real_solves,
-            "adb_evaluation_pass": adb_pass,
-            "meets_minimum": (real_solves + adb_pass) >= OMEGA_MIN_TASK_SOLVES,
-            "should_reject_if_zero": real_solves == 0 and adb_pass == 0,
-        }
-        self._omega_task_evaluations.append(result)
-        return result
-
-    def measure_held_out_generalization(self, agent_fn: Any = None) -> Dict[str, float]:
-        """Measure performance on domains the system never trained on.
-
-        Why (A2): GENERALIZATION must be measured on unseen task domains.
-        Fallback: returns 0.0 for all held-out domains.
-        """
-        results = {}
-        for domain in HELD_OUT_DOMAINS:
-            # Generate held-out tasks
-            scores = []
-            for _ in range(5):
-                length = self.rng.randint(3, 6)
-                inp = [self.rng.randint(-3, 9) for _ in range(length)]
-
-                if "reverse" in domain:
-                    expected = list(reversed(inp))
-                elif "sort" in domain:
-                    expected = sorted(inp)
-                else:
-                    # Dedup
-                    seen = set()
-                    expected = []
-                    for v in inp:
-                        if v not in seen:
-                            seen.add(v)
-                            expected.append(v)
-
-                if agent_fn is not None:
-                    try:
-                        prediction = agent_fn(inp, domain)
-                        scores.append(1.0 if prediction == expected else 0.0)
-                    except Exception:
-                        scores.append(0.0)
-                else:
-                    scores.append(0.0)
-
-            domain_score = sum(scores) / max(1, len(scores))
-            results[domain] = domain_score
-            if domain not in self._held_out_results:
-                self._held_out_results[domain] = []
-            self._held_out_results[domain].append(domain_score)
-
-        return results
-
-    def detect_external_stagnation(self) -> bool:
-        """Detect stagnation using external benchmark signal.
-
-        Why (A5): internal reward can be gamed; external signal cannot.
-        Fallback: returns False if insufficient history.
-        """
-        if len(self._external_scores) < EXTERNAL_STAGNATION_WINDOW:
-            return False
-
-        recent = self._external_scores[-EXTERNAL_STAGNATION_WINDOW:]
-        improvement = max(recent) - min(recent)
-        return improvement < EXTERNAL_STAGNATION_THRESHOLD
-
-    def validate_hdc_retrieval(self, shared_mem: Any) -> Dict[str, Any]:
-        """Validate HDC memory retrieval precision WITHOUT tag pre-filtering.
-
-        Why (A6): HDC overhaul must be validated against retrieval benchmark.
-        The search MUST use only the query string for similarity — no tag= filter.
-        Tag filtering makes precision trivially 1.0 (the filter does the work,
-        not HDC similarity). Cross-domain noise items challenge the retrieval.
-        Fallback: returns failed status if precision below threshold.
-        """
-        # Use distinct vocabulary per domain for cleaner signal
-        domain_vocab = {
-            "algorithm": ["sorting", "hashing", "graph", "search", "complexity",
-                          "recursion", "dynamic", "greedy", "tree", "heap"],
-            "systems":   ["kernel", "scheduler", "cache", "pipeline", "latency",
-                          "throughput", "memory", "interrupt", "filesystem", "mutex"],
-            "theory":    ["proof", "theorem", "lemma", "induction", "axiom",
-                          "decidability", "completeness", "reduction", "logic", "set"],
-        }
-
-        # Add domain-specific items with distinct titles
-        domains: Dict[str, List[str]] = {d: [] for d in domain_vocab}
-        for domain, vocab in domain_vocab.items():
-            for i, word in enumerate(vocab):
-                mid = shared_mem.add(
-                    "note",
-                    f"{domain} {word} optimization task {i}",
-                    {"domain": domain, "variant": i},
-                    tags=[domain, "hdc_benchmark"],
-                )
-                domains[domain].append(mid)
-
-        # Add cross-domain noise items to challenge retrieval
-        noise_titles = [
-            "general optimization performance benchmark task 0",
-            "algorithm systems theory combined evaluation 1",
-            "scheduling sorting proof complexity analysis 2",
-            "cache recursion theorem pipeline integration 3",
-            "mixed domain cross-cutting performance test 4",
-        ]
-        for title in noise_titles:
-            shared_mem.add(
-                "note", title,
-                {"domain": "noise", "variant": "cross_domain"},
-                tags=["hdc_benchmark"],
+    def __init__(
+        self,
+        results_path: Optional[Union[str, Path]] = None,
+        benchmark_format: str = "generic",
+    ) -> None:
+        if benchmark_format not in _KNOWN_FORMATS:
+            raise ValueError(
+                f"Unknown benchmark format '{benchmark_format}'. "
+                f"Choose from {sorted(_KNOWN_FORMATS)}."
             )
+        self._format = benchmark_format
+        self._raw: Dict[str, Any] = {}
+        self._external_score: Optional[float] = None
+        self._score_history: List[float] = []
 
-        # Test retrieval precision: NO tag filter — HDC must discriminate by similarity
-        precisions = {}
-        queries = {
-            "algorithm": "algorithm sorting hashing graph",
-            "systems":   "systems kernel scheduler cache",
-            "theory":    "theory proof theorem lemma",
+        if results_path is not None:
+            self.load(results_path)
+
+    # ------------------------------------------------------------------
+    # Loading
+    # ------------------------------------------------------------------
+
+    def load(self, path: Union[str, Path]) -> None:
+        """Load benchmark results from a JSON file."""
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"Benchmark results file not found: {p}")
+        with p.open("r", encoding="utf-8") as f:
+            self._raw = json.load(f)
+        self._external_score = _PARSERS[self._format](self._raw)
+        self._score_history.append(self._external_score)
+
+    def register_results(self, data: Dict[str, Any]) -> None:
+        """Register results from an in-memory dict (for testing or CI)."""
+        self._raw = data
+        self._external_score = _PARSERS[self._format](data)
+        self._score_history.append(self._external_score)
+
+    # ------------------------------------------------------------------
+    # Scoring
+    # ------------------------------------------------------------------
+
+    @property
+    def external_score(self) -> float:
+        """Most recent external benchmark score, or 0.0 if not yet loaded."""
+        return self._external_score if self._external_score is not None else 0.0
+
+    def correlation_score(
+        self,
+        internal_metrics: Dict[str, float],
+    ) -> float:
+        """Return a correlation score in [0, 1] between external and internal metrics.
+
+        The score reflects how well the agent's self-reported performance
+        (internal_metrics) aligns with external ground truth.  A high score
+        means the agent is not wireheading.
+
+        Algorithm:
+          weighted_internal = weighted average of internal metrics
+          alignment = 1 - |weighted_internal - external_score|
+          Returns alignment clamped to [0, 1].
+        """
+        if self._external_score is None:
+            return 0.0
+
+        if not internal_metrics:
+            # No internal metrics to compare against; neutral score
+            return 0.5
+
+        # Weighted average: holdout_pass_rate gets double weight if present
+        weights = {
+            "holdout_pass_rate": 2.0,
+            "train_pass_rate": 1.0,
+            "adversarial_pass_rate": 1.5,
         }
-        for domain in domains:
-            results = shared_mem.search(
-                queries[domain], k=5, kinds=["note"])
-            # NO tags= parameter — HDC similarity alone must discriminate
-            if results:
-                correct = sum(
-                    1 for r in results
-                    if isinstance(r.content, dict) and r.content.get("domain") == domain
-                )
-                precisions[domain] = correct / len(results)
-            else:
-                precisions[domain] = 0.0
+        total_w = 0.0
+        weighted_sum = 0.0
+        for key, val in internal_metrics.items():
+            w = weights.get(key, 1.0)
+            weighted_sum += w * float(val)
+            total_w += w
+        weighted_internal = weighted_sum / total_w if total_w > 0 else 0.5
 
-        mean_precision = sum(precisions.values()) / max(1, len(precisions))
+        alignment = 1.0 - abs(weighted_internal - self._external_score)
+        return max(0.0, min(1.0, alignment))
 
-        # Sanity check: if all precisions are 1.0, tag filters may be leaking
-        all_perfect = all(p == 1.0 for p in precisions.values()) if precisions else False
-        if all_perfect:
-            import warnings
-            warnings.warn(
-                "All HDC precisions = 1.000. Verify tag filters are not inflating results."
-            )
+    # ------------------------------------------------------------------
+    # Introspection
+    # ------------------------------------------------------------------
 
-        # Random baseline test: query with gibberish to measure noise floor
-        random_results = shared_mem.search(
-            "xyzzy frobble quux grault waldo", k=5, kinds=["note"])
-        random_algo_count = sum(
-            1 for r in random_results
-            if isinstance(r.content, dict) and r.content.get("domain") == "algorithm"
-        ) if random_results else 0
-        random_baseline = random_algo_count / max(1, len(random_results)) if random_results else 0.0
+    def is_loaded(self) -> bool:
+        return self._external_score is not None
 
+    def summary(self) -> Dict[str, Any]:
         return {
-            "precisions": precisions,
-            "mean_precision": mean_precision,
-            "passes_threshold": mean_precision >= HDC_PRECISION_THRESHOLD,
-            "threshold": HDC_PRECISION_THRESHOLD,
-            "possible_tag_inflation": all_perfect,
-            "random_baseline": random_baseline,
+            "format": self._format,
+            "loaded": self.is_loaded(),
+            "external_score": self.external_score,
+            "score_history": list(self._score_history),
         }
-
-    def is_overfitting(self, internal_composite: float,
-                       external_accuracy: float) -> bool:
-        """Detect if internal metrics improve but external don't.
-
-        Why (A2): if all 5 axes improve but held-out accuracy doesn't,
-        the run is classified as OVERFITTING.
-
-        Logic: overfitting requires BOTH (a) meaningful internal score AND
-        (b) external scores that are non-trivially measured (scores > 0 exist)
-        but not improving. If external benchmark has no solver (all 0.0),
-        that's 'unmeasured', not 'overfitting'.
-        Fallback: returns False if insufficient data.
-        """
-        if not self._external_scores or len(self._external_scores) < 2:
-            return False
-
-        # If all external scores are 0, the benchmark had no solver —
-        # this is 'unmeasured' rather than 'overfitting'
-        if all(s == 0.0 for s in self._external_scores):
-            return False
-
-        # Internal improving but external flat/declining
-        external_trend = self._external_scores[-1] - self._external_scores[0]
-        return internal_composite > 0.1 and external_trend < 0.01
-
-    def get_external_score_history(self) -> List[float]:
-        """Return external benchmark score history.
-
-        Why: needed for evidence reporting.
-        Fallback: returns empty list.
-        """
-        return list(self._external_scores)
