@@ -658,6 +658,83 @@ class Orchestrator:
             return candidates[best_idx % len(candidates)]
         return held_out_fn
 
+    def _run_algo_env_evaluation(
+        self, round_idx: int, stagnation: bool, round_out: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Task 3: Run secondary evaluation via AlgorithmSynthesisEnvironment.
+
+        Why: connects the algo_env pipeline to the main orchestration loop.
+        Called when algo_env exists or stagnation persists for 3+ rounds.
+        Submits best OmegaForge genome to algo_env tasks and tracks results.
+        """
+        results: Dict[str, Any] = {"evaluated": False}
+
+        # Lazily create algo_env if stagnation persists
+        stag_count = sum(1 for r in self._recent_rewards[-3:] if r < 0.05) if len(self._recent_rewards) >= 3 else 0
+        if self.algo_env is None and stag_count >= 3:
+            self.algo_env = AlgorithmSynthesisEnvironment(seed=42)
+
+        if self.algo_env is None:
+            return results
+
+        results["evaluated"] = True
+        algo_rewards: List[float] = []
+
+        # Get available tasks at current curriculum level
+        available = self.algo_env.available_tasks()
+        if not available:
+            return results
+
+        # Try submitting best genome from OmegaForge population (if any)
+        best_genome = None
+        for agent in self._agents[:2]:
+            vm_skills = self.skills.vm_skills()
+            if vm_skills and hasattr(vm_skills[0], 'fn') and hasattr(vm_skills[0].fn, '_genome'):
+                best_genome = vm_skills[0].fn._genome
+                break
+
+        # Also try challenger and meta_optimizer paths
+        for agent in self._agents:
+            task = available[round_idx % len(available)]
+            obs = self.algo_env.make_observation(
+                TaskSpec(name=task.name, difficulty=task.level + 1,
+                         baseline=0.3, domain=task.domain),
+                budget=self.cfg.base_budget)
+
+            if agent.cfg.role == "challenger":
+                action_result = agent._act_generate_challenge(obs)
+                action, payload = action_result
+                _, reward, info = self.algo_env.step(obs, action, payload)
+                algo_rewards.append(reward)
+                if info.get("challenge_registered"):
+                    self.causal_tracker.record_challenge_created(
+                        info["challenge_registered"], agent.cfg.name, round_idx)
+            elif best_genome is not None:
+                obs["forge_engine"] = type('FE', (), {'population': [best_genome]})()
+                action_result = agent._act_submit_program(obs)
+                action, payload = action_result
+                _, reward, info = self.algo_env.step(obs, action, payload)
+                algo_rewards.append(reward)
+                # Track curriculum progress
+                holdout = info.get("holdout_rate", 0)
+                level = info.get("level", 0)
+                if holdout > 0:
+                    self.agi_tracker.update_algorithm_level(level)
+                    self.competence_map.update(task.domain, task.level + 1, holdout)
+                    self.causal_tracker.record_program_submitted(
+                        task.name, reward, agent.cfg.name, round_idx)
+                break  # one submission per round
+
+        # Check for level unlocks
+        prev_level = results.get("prev_level", 0)
+        curr_level = self.algo_env._curriculum.max_level
+        if curr_level > prev_level:
+            self.causal_tracker.record_level_unlock(curr_level, round_idx)
+
+        results["algo_rewards"] = algo_rewards
+        results["curriculum_level"] = curr_level
+        return results
+
     def _budget_for_agent(self, base_budget: int, role: str) -> int:
         infra_focus = float(self._org_policy.get("infra_focus", 0.5))
         infra_roles = {"builder", "verifier", "strategist"}
@@ -1039,6 +1116,9 @@ class Orchestrator:
             recursive_depth=self.causal_tracker.max_chain_depth(),
             skill_derived_domain_names=skill_domain_names,
         )
+        # Task 3: AlgorithmSynthesisEnvironment secondary evaluation
+        algo_results = self._run_algo_env_evaluation(round_idx, stagnation, round_out)
+
         # Domain counting is done in _assign_tasks via fingerprinting;
         # here we only track difficulty increases.
         self.agi_tracker.tick_round()
@@ -1062,6 +1142,7 @@ class Orchestrator:
                 "total_skill_births": self.causal_tracker.skill_birth_count(),
                 "skill_derived_goals": self.causal_tracker.goal_created_count(),
                 "governance_adjustment": self._last_governance_adjustment,
+                "algo_env_results": algo_results,
             }
         )
         return round_out
