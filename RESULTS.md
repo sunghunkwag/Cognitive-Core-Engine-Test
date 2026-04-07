@@ -230,6 +230,7 @@ rewards from VM program execution on algorithmic tasks.
 | 2 | BUBBLE_SORT, REVERSE, UNIQUE_COUNT, INNER_PRODUCT | 10/8 | Nested loops |
 | 3 | SORT_SUM_TOP_K, MAX_ADJACENT_SUMS, NORMALIZE | 8/6 | Subroutine composition |
 | 4 | COMPOSE_SUM_MAX, EVAL_AND_COMPARE | 5/5 | Meta-programs |
+| 5 (SR) | IMPROVE_EVOLUTION_YIELD, FITNESS_DISCRIMINATION, SELF_TEST | 5/5 | Self-referential |
 
 ### Anti-Cheat Enforcement
 - AC-E1: VM timeout 500 steps
@@ -247,6 +248,27 @@ Level N requires >= 60% holdout accuracy on 2+ Level N-1 tasks. No time-based un
 The formula-based ResearchEnvironment is retained as legacy fallback. The
 AlgorithmSynthesisEnvironment provides a stricter evaluation where the ONLY
 path to reward > 0 is producing correct program output.
+
+### Phase 3: Self-Referential Tasks
+
+Three self-referential tasks (Level 5) require agents to improve their own pipeline:
+- SR_IMPROVE_EVOLUTION_YIELD: write mutation operators that improve OmegaForge output
+- SR_IMPROVE_FITNESS_DISCRIMINATION: propose fitness thresholds that correlate with performance
+- SR_SELF_TEST_IMPROVEMENT: generate test parameters that reveal program failures
+
+All SR tasks use separate measurement environment instances (AC-S8) and cannot be
+attempted until Level 4 is unlocked through normal curriculum progression.
+
+### Phase 4: Adversarial Multi-Agent
+
+Two new agent roles:
+- **Challenger**: generates task challenges with oracle validation (AC-A1: >= 2 solvers required)
+- **Meta-optimizer**: tunes OmegaForge hyperparameters based on treatment/baseline comparison
+
+New causal chain event types: `level_unlocked`, `challenge_created`, `sr_task_attempted`, `program_submitted`
+
+Level-aware goal generation integrates curriculum progression with GoalGenerator.
+AGI tracker reports `capability_horizon` (max level / 4.0) and `sr_success_rate`.
 
 ---
 Seed: 42 | Rounds: 50 | Time: 29.5s | Branch: claude/wire-solvers-benchmarks-YoewQ

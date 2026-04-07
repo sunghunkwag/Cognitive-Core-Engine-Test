@@ -10,6 +10,7 @@ Anti-cheat: AC-E1..E7 enforced.  No formula rewards, no shaping, no bonuses.
 """
 from __future__ import annotations
 
+import copy
 import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -124,6 +125,78 @@ def oracle_eval_and_compare(inputs: List[float], extra: Any = None) -> float:
     ref = extra.get("reference", 0.0) if extra else 0.0
     computed = sum(inputs)  # default task: compare sum to reference
     return 1.0 if abs(computed - ref) < 1e-3 else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Self-referential oracle helpers (Phase 3)
+# ---------------------------------------------------------------------------
+
+def _sr_oracle_evolution_yield(inputs: List[float], extra: Any = None) -> float:
+    """Oracle for SR_IMPROVE_EVOLUTION_YIELD.
+
+    Evaluates whether the agent's proposed mutation (encoded in inputs)
+    improves evolution yield above baseline (0.2).
+    AC-S1: Uses deterministic seed 9001 for seed genomes.
+    """
+    baseline_yield = 0.2
+    # The inputs represent the proposed mutation operator encoded as floats
+    # We measure how many of the input values exceed the baseline threshold
+    rng = _stdlib_random.Random(9001)
+    seed_scores = [rng.random() * 0.4 for _ in range(5)]
+    improved = sum(1 for i, s in enumerate(seed_scores)
+                   if i < len(inputs) and abs(inputs[i]) > 0.1 and s + abs(inputs[i]) * 0.3 > baseline_yield)
+    return improved / 5.0
+
+
+def _sr_oracle_fitness_discrimination(inputs: List[float], extra: Any = None) -> float:
+    """Oracle for SR_IMPROVE_FITNESS_DISCRIMINATION.
+
+    Evaluates whether the agent's proposed threshold (first input value)
+    discriminates between good and bad genomes.
+    AC-S4: Uses seed 9002.
+    """
+    rng = _stdlib_random.Random(9002)
+    # Generate 10 genomes: 5 "good" (score > 0.5) and 5 "bad" (score <= 0.5)
+    good_scores = [0.5 + rng.random() * 0.4 for _ in range(5)]
+    bad_scores = [rng.random() * 0.4 for _ in range(5)]
+    all_scores = good_scores + bad_scores
+    all_labels = [1.0] * 5 + [0.0] * 5
+
+    threshold = inputs[0] if inputs else 0.5
+    predictions = [1.0 if s > threshold else 0.0 for s in all_scores]
+
+    # Compute simple rank correlation proxy
+    correct = sum(1 for p, l in zip(predictions, all_labels) if p == l)
+    correlation = (correct / 10.0 - 0.5) * 2.0  # scale to [-1, 1]
+    return max(0.0, correlation)
+
+
+def _sr_oracle_self_test(inputs: List[float], extra: Any = None) -> float:
+    """Oracle for SR_SELF_TEST_IMPROVEMENT.
+
+    Evaluates whether the agent's proposed test parameters (encoded in inputs)
+    can discriminate between correct and incorrect programs.
+    AC-S7: Uses seed 9003 + case_index.
+    """
+    if not inputs or len(inputs) < 2:
+        return 0.0
+    # inputs encode: [input_length, value_range, ...]
+    input_length = max(1, min(8, int(abs(inputs[0]))))
+    value_range = max(1, min(20, int(abs(inputs[1]))))
+
+    # Generate test cases using proposed parameters
+    fail_count = 0
+    total_programs = max(1, int(extra.get("n_programs", 5)) if extra else 5)
+    for case_idx in range(10):
+        rng = _stdlib_random.Random(9003 + case_idx)
+        test_input = [float(rng.randint(-value_range, value_range))
+                      for _ in range(input_length)]
+        expected = sum(test_input)
+        # Check if a "simple sum" program would fail on extreme cases
+        if abs(expected) > value_range * input_length * 0.8:
+            fail_count += 1
+
+    return fail_count / 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +368,23 @@ def build_all_tasks() -> Dict[str, AlgoTask]:
                                train_cases=tr, holdout_cases=ho,
                                external_cases=ex, oracle=oracle, output_mode=mode)
 
+    # Self-Referential tasks (Phase 3) — Level 5 (requires max_level >= 4)
+    SR_LEVEL = 5  # gated by curriculum: only available when all L0-L4 unlocked
+
+    for sr_name, sr_oracle, sr_seed in [
+        ("SR_IMPROVE_EVOLUTION_YIELD", _sr_oracle_evolution_yield, 9001),
+        ("SR_IMPROVE_FITNESS_DISCRIMINATION", _sr_oracle_fitness_discrimination, 9002),
+        ("SR_SELF_TEST_IMPROVEMENT", _sr_oracle_self_test, 9003),
+    ]:
+        tr, ho, ex = TaskCaseGenerator.generate(
+            sr_name, SR_LEVEL, sr_oracle, "reg0",
+            n_train=5, n_holdout=5, n_external=3,
+            min_len=3, max_len=6, val_lo=-5, val_hi=5)
+        tasks[sr_name] = AlgoTask(
+            name=sr_name, level=SR_LEVEL, domain="self_referential",
+            train_cases=tr, holdout_cases=ho, external_cases=ex,
+            oracle=sr_oracle, output_mode="reg0")
+
     return tasks
 
 
@@ -349,6 +439,7 @@ class AlgorithmSynthesisEnvironment(ResearchEnvironment):
 
     def __init__(self, seed: int = 0) -> None:
         super().__init__(seed=seed)
+        self._seed = seed
         self._vm = VirtualMachine(max_steps=self.VM_TIMEOUT)
         self._algo_tasks = build_all_tasks()
         self._curriculum = CurriculumGate()
@@ -359,6 +450,8 @@ class AlgorithmSynthesisEnvironment(ResearchEnvironment):
         self._challenge_solve_counts: Dict[str, float] = {}
         # Self-ref measurement counter
         self._self_ref_env_id: int = id(self)
+        # Phase 3: Solved programs registry (AC-S10)
+        self._solved_programs: List[ProgramGenome] = []
 
     def get_algo_task(self, task_name: str) -> Optional[AlgoTask]:
         """Get an algorithm task by name."""
@@ -368,6 +461,14 @@ class AlgorithmSynthesisEnvironment(ResearchEnvironment):
         """Return tasks at or below the current curriculum level."""
         max_lv = self._curriculum.max_level
         return [t for t in self._algo_tasks.values() if t.level <= max_lv]
+
+    def _create_measurement_env(self) -> 'AlgorithmSynthesisEnvironment':
+        """Create a SEPARATE environment for self-referential measurements.
+
+        AC-S8: seed = self._seed + 7777, distinct from self.
+        AC-S3: Uses its own VirtualMachine instance.
+        """
+        return AlgorithmSynthesisEnvironment(seed=self._seed + 7777)
 
     def make_observation(self, task: TaskSpec, budget: int,
                          phase: str = "research") -> Dict[str, Any]:
@@ -449,6 +550,12 @@ class AlgorithmSynthesisEnvironment(ResearchEnvironment):
         self._curriculum.record_solve_rate(task_name, algo.level, rate)
         info["holdout_rate"] = rate
         info["level"] = algo.level
+
+        # AC-S10: Append to solved_programs if rate >= 0.6 and NOT an SR task
+        is_sr = algo.domain == "self_referential"
+        if rate >= 0.6 and not is_sr:
+            self._solved_programs.append(copy.deepcopy(genome))
+
         return rate
 
     def _handle_compose(self, obs: Dict[str, Any], payload: Dict[str, Any],

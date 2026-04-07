@@ -267,3 +267,63 @@ class CausalChainTracker:
     def goal_created_count(self) -> int:
         """Count of goal_created events from skills."""
         return sum(1 for e in self._events if e.event_type == "goal_created")
+
+    # ------------------------------------------------------------------
+    # Phase 4: New event types for algorithm synthesis integration
+    # ------------------------------------------------------------------
+
+    def record_level_unlock(
+        self, level: int, round_idx: int,
+        cause_event_id: Optional[str] = None,
+    ) -> str:
+        """Record when curriculum gate opens a new level."""
+        event = CausalEvent(
+            event_id=self._make_event_id("lu"),
+            event_type="level_unlocked",
+            timestamp_round=round_idx,
+            cause_event_id=cause_event_id,
+            data={"level": level},
+        )
+        return self._append_event(event)
+
+    def record_challenge_created(
+        self, challenge_name: str, creator_agent: str, round_idx: int,
+        cause_event_id: Optional[str] = None,
+    ) -> str:
+        """Record when a challenger agent creates a new task."""
+        event = CausalEvent(
+            event_id=self._make_event_id("cc"),
+            event_type="challenge_created",
+            timestamp_round=round_idx,
+            cause_event_id=cause_event_id,
+            data={"challenge_name": challenge_name, "creator_agent": creator_agent},
+        )
+        return self._append_event(event)
+
+    def record_sr_task_attempted(
+        self, task_name: str, reward: float, round_idx: int,
+        cause_event_id: Optional[str] = None,
+    ) -> str:
+        """Record a self-referential task attempt."""
+        event = CausalEvent(
+            event_id=self._make_event_id("sr"),
+            event_type="sr_task_attempted",
+            timestamp_round=round_idx,
+            cause_event_id=cause_event_id,
+            data={"task_name": task_name, "reward": reward},
+        )
+        return self._append_event(event)
+
+    def record_program_submitted(
+        self, task_name: str, reward: float, agent_name: str, round_idx: int,
+        cause_event_id: Optional[str] = None,
+    ) -> str:
+        """Record any program submission to AlgorithmSynthesisEnvironment."""
+        event = CausalEvent(
+            event_id=self._make_event_id("ps"),
+            event_type="program_submitted",
+            timestamp_round=round_idx,
+            cause_event_id=cause_event_id,
+            data={"task_name": task_name, "reward": reward, "agent_name": agent_name},
+        )
+        return self._append_event(event)
