@@ -99,11 +99,16 @@ class TransferEngine:
         self,
         concept_graph: Optional[Any] = None,
         similarity_threshold: float = 0.65,
+        competence_map: Optional[Any] = None,
     ) -> None:
         self._graph = concept_graph
+        self._competence_map = competence_map
         self.similarity_threshold = similarity_threshold
         self._transfer_history: List[TransferRecord] = []
         self._last_transfer_round: int = -100  # allow first transfer
+        # Task 1: Track pre-transfer snapshots for real measurement/rollback
+        self._pre_transfer_snapshots: Dict[str, Dict] = {}
+        self._transfer_concepts: Dict[str, List[str]] = {}  # target_domain -> concept_ids
 
     # ------------------------------------------------------------------
     # Core API
@@ -190,7 +195,12 @@ class TransferEngine:
         return round_idx > 0 and (round_idx - self._last_transfer_round) >= cooldown
 
     def transfer(self, source_domain: str, target_domain: str) -> Dict[str, Any]:
-        """Attempt transfer between two domains (orchestrator-facing)."""
+        """Attempt transfer between two domains (orchestrator-facing).
+
+        Why: snapshots competence before transfer for real delta measurement.
+        """
+        # Task 1: Snapshot competence before transfer
+        self.snapshot_competence(target_domain)
         sim, method = self.compute_similarity(source_domain, target_domain)
         record = self.transfer_knowledge(
             source_domain, {"domain_transfer": True}, target_domain
@@ -208,13 +218,84 @@ class TransferEngine:
         """Record that a transfer was attempted at this round."""
         self._last_transfer_round = round_idx
 
+    def snapshot_competence(self, target_domain: str) -> None:
+        """Snapshot CompetenceMap rates for target domain before transfer.
+
+        Why: enables real measure_transfer_success() delta computation
+        and rollback_transfer() state restoration.
+        """
+        if self._competence_map is None:
+            return
+        snapshot: Dict[int, float] = {}
+        for key in self._competence_map.all_keys():
+            domain, diff = key
+            if domain == target_domain:
+                snapshot[diff] = self._competence_map.get_rate(domain, diff)
+        self._pre_transfer_snapshots[target_domain] = {
+            "rates": snapshot,
+            "domain": target_domain,
+        }
+
     def measure_transfer_success(self, target_domain: str, pre_baseline: float) -> float:
-        """Measure transfer success (stub: returns small positive value)."""
-        return 0.05
+        """Measure ACTUAL competence delta after transfer.
+
+        Why: the old stub returned 0.05 always. This queries CompetenceMap
+        for real rate changes across all difficulty levels in the target domain.
+        Returns averaged (post - pre) delta, or 0.0 if no data exists.
+        """
+        if self._competence_map is None:
+            return 0.0
+        snapshot = self._pre_transfer_snapshots.get(target_domain, {}).get("rates", {})
+        if not snapshot:
+            # No pre-transfer snapshot — query current rates as proxy
+            deltas = []
+            for key in self._competence_map.all_keys():
+                domain, diff = key
+                if domain == target_domain:
+                    current = self._competence_map.get_rate(domain, diff)
+                    deltas.append(current - pre_baseline)
+            return sum(deltas) / max(1, len(deltas)) if deltas else 0.0
+
+        # Compare post-transfer rates to snapshot
+        deltas = []
+        for diff, pre_rate in snapshot.items():
+            post_rate = self._competence_map.get_rate(target_domain, diff)
+            deltas.append(post_rate - pre_rate)
+        return sum(deltas) / max(1, len(deltas)) if deltas else 0.0
 
     def rollback_transfer(self, target_domain: str) -> None:
-        """Rollback a failed transfer (stub: no-op)."""
-        pass
+        """Rollback a failed transfer by removing transferred concepts
+        and restoring competence snapshot.
+
+        Why: the old stub was a no-op. Real rollback removes concepts
+        created during transfer and restores pre-transfer competence rates.
+        """
+        # Remove transferred concepts from ConceptGraph
+        concept_ids = self._transfer_concepts.pop(target_domain, [])
+        if concept_ids and self._graph is not None:
+            for cid in concept_ids:
+                if hasattr(self._graph, 'remove_concept'):
+                    self._graph.remove_concept(cid)
+                elif hasattr(self._graph, '_nodes'):
+                    self._graph._nodes.pop(cid, None)
+
+        # Restore competence snapshot
+        snapshot = self._pre_transfer_snapshots.pop(target_domain, {})
+        if snapshot and self._competence_map is not None:
+            rates = snapshot.get("rates", {})
+            for diff, rate in rates.items():
+                # Restore by updating with the old rate
+                self._competence_map._rates[(target_domain, diff)] = rate
+
+        # Log rollback in transfer history
+        rollback_record = TransferRecord(
+            source_concept="rollback",
+            target_concept=target_domain,
+            similarity=0.0,
+            similarity_method="rollback",
+            success=False,
+        )
+        self._transfer_history.append(rollback_record)
 
     # ------------------------------------------------------------------
     # Introspection

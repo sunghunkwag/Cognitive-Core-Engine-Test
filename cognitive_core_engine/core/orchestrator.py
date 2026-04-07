@@ -127,7 +127,7 @@ class Orchestrator:
         self.goal_gen = GoalGenerator(self.competence_map, self.mem, random.Random(42))
         self.intrinsic_motivation = IntrinsicMotivationModule(self.mem, self.competence_map)
         self.concept_graph = ConceptGraph()
-        self.transfer_engine = TransferEngine(self.concept_graph)
+        self.transfer_engine = TransferEngine(self.concept_graph, competence_map=self.competence_map)
         self.self_model = AdvancedSelfReferentialModel()
         self.difficulty_scheduler = DifficultyScheduler(self.competence_map, random.Random(42))
         self.self_improvement = SelfImprovementEngine()
