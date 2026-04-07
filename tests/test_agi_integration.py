@@ -123,9 +123,7 @@ def run_agi_integration_tests() -> None:
     def test_transfer_positive() -> bool:
         """Train on domain A, transfer to similar domain B → assert no crash."""
         cg = ConceptGraph()
-        mem = SharedMemory()
-        wm_proxy = type('WM', (), {'_weights': {}})()
-        te = TransferEngine(cg, mem, wm_proxy)
+        te = TransferEngine(cg)
         # Add concepts for source domain
         cid = cg.add_concept("skill_algo", 0, [],
                              {"domain": "algorithm", "action": "attempt_breakthrough"})
@@ -138,10 +136,7 @@ def run_agi_integration_tests() -> None:
     def test_transfer_negative_rollback() -> bool:
         """Attempt transfer between unrelated domains → verify rollback works."""
         cg = ConceptGraph()
-        mem = SharedMemory()
-        wm_proxy = type('WM', (), {'_weights': {"algorithm_w": 0.5}})()
-        te = TransferEngine(cg, mem, wm_proxy)
-        te._save_snapshot("target_domain")
+        te = TransferEngine(cg)
         te.rollback_transfer("target_domain")
         return True  # No crash
 
