@@ -589,12 +589,16 @@ class Orchestrator:
         return tasks
 
     def _make_agent_solve_fn(self) -> Any:
-        """Create a solve_fn closure that uses the best agent's WorldModel.
+        """DEPRECATED: Hardcoded mapping, does not test real agent capability.
 
-        The ADB benchmark task is 'reverse the input list'. The agent's
-        WorldModel Q-values guide action selection: action 0 = reverse,
-        1 = sort, 2 = sort desc, 3 = identity. The agent is NOT told the
-        answer — it must infer 'reverse' from its learned Q-values.
+        Why deprecated: this uses a lookup table (0→reverse, 1→sort, etc.)
+        instead of actually running the agent's programs. No AGI axis score
+        should depend on this output. Replaced by AlgorithmSynthesisEnvironment
+        evaluation in Task 3.
+        """
+        import warnings
+        warnings.warn("_make_agent_solve_fn is deprecated — uses hardcoded mapping", DeprecationWarning)
+        """
         """
         # Pick the agent with the most experience (highest total usage)
         def _agent_experience(a):
@@ -626,6 +630,9 @@ class Orchestrator:
         return solve_fn
 
     def _make_held_out_fn(self) -> Any:
+        """DEPRECATED: Hardcoded mapping, does not test real agent capability."""
+        import warnings
+        warnings.warn("_make_held_out_fn is deprecated — uses hardcoded mapping", DeprecationWarning)
         """Create a held_out_fn for measure_held_out_generalization."""
         def _agent_experience(a):
             counts = a.wm._sa_counts
@@ -879,9 +886,14 @@ class Orchestrator:
         stagnation = stagnation_override if stagnation_override is not None else self._detect_stagnation()
 
         # A5: External stagnation detection supplements internal signal
-        # Wire an agent solve_fn so the benchmark is connected (not always-zero)
+        # Task 4: ADB snapshot uses deprecated hardcoded mapping — kept for
+        # backward compat but no AGI score depends on it. Real evaluation
+        # flows through AlgorithmSynthesisEnvironment (Task 3).
         if not stagnation and round_idx % 5 == 0 and round_idx > 0:
-            agent_solve_fn = self._make_agent_solve_fn()
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                agent_solve_fn = self._make_agent_solve_fn()
             self.external_benchmark.run_adb_snapshot(solve_fn=agent_solve_fn)
             # BN-07: Run full external benchmark with real solvers
             arc_fn, he_fn = create_solver_pair()
