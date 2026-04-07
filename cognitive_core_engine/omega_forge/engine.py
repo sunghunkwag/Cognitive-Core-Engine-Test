@@ -15,6 +15,7 @@ from cognitive_core_engine.omega_forge.cfg import ControlFlowGraph
 from cognitive_core_engine.omega_forge.vm import MacroLibrary, VirtualMachine
 from cognitive_core_engine.omega_forge.concepts import rand_inst
 from cognitive_core_engine.omega_forge.benchmark import (
+    EnvironmentCoupledFitness,
     StrictStructuralDetector,
     TaskBenchmark,
 )
@@ -38,6 +39,7 @@ class OmegaForgeV13:
         self.population: List[ProgramGenome] = []
         self.generation: int = 0
         self.parents_index: Dict[str, ProgramGenome] = {}
+        self.env_fitness: Optional[EnvironmentCoupledFitness] = None
 
     def init_population(self) -> None:
         self.population = []
@@ -134,8 +136,12 @@ class OmegaForgeV13:
             if st2.error or (not st2.halted_cleanly):
                 struct_score -= 0.5
 
-            # TASK-AWARE score (NEW): practical problem-solving ability
-            task_score = TaskBenchmark.evaluate(g, self.vm)
+            # TASK-AWARE score: practical problem-solving ability
+            # BN-08: use environment-coupled fitness if available, else static tasks
+            if self.env_fitness is not None:
+                task_score = 0.5 * TaskBenchmark.evaluate(g, self.vm) + 0.5 * self.env_fitness.evaluate(g, self.vm)
+            else:
+                task_score = TaskBenchmark.evaluate(g, self.vm)
 
             # Combined score: 50% structure + 50% task performance
             score = 0.5 * struct_score + 0.5 * task_score * 2.0  # task_score scaled to ~1.0 max

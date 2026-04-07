@@ -46,6 +46,13 @@ class AGIProgressTracker:
         self._rounds_elapsed: int = 0
         self._composite_history: List[float] = []
         self._external_benchmark_scores: List[float] = []
+        # BN-08: Emergence metrics
+        self._skill_births: int = 0
+        self._skills_that_improved_reward: int = 0
+        self._skill_derived_domains: int = 0
+        self._initial_domains: set = set()
+        self._recursive_depth: int = 0
+        self._skill_derived_domain_names: set = set()
 
     def update_transfer(self, success: float, attempted: bool) -> None:
         """Record a transfer learning attempt and outcome.
@@ -123,6 +130,53 @@ class AGIProgressTracker:
         """
         if validated:
             self._externally_validated_mods += 1
+
+    # --- BN-08: Emergence metrics ---
+
+    def set_initial_domains(self, domains: set) -> None:
+        """Record the initial domain set for capability horizon calculation."""
+        self._initial_domains = set(domains)
+
+    def update_emergence(
+        self,
+        skill_births: int = 0,
+        skills_improved_reward: int = 0,
+        skill_derived_domains: int = 0,
+        recursive_depth: int = 0,
+        skill_derived_domain_names: Optional[set] = None,
+    ) -> None:
+        """Update BN-08 emergence metrics.
+
+        Tool Genesis Rate = skills_that_improved_reward / total_rounds (E9)
+        Capability Horizon = skill-derived domains solvable (E10: excludes initial + NOVEL_DOMAINS)
+        Recursive Depth = max causal chain depth
+        """
+        self._skill_births += skill_births
+        self._skills_that_improved_reward += skills_improved_reward
+        self._skill_derived_domains += skill_derived_domains
+        self._recursive_depth = max(self._recursive_depth, recursive_depth)
+        if skill_derived_domain_names:
+            self._skill_derived_domain_names.update(skill_derived_domain_names)
+
+    def tool_genesis_rate(self) -> float:
+        """BN-08: evolved skills that improved reward / total_rounds.
+
+        Anti-cheat E9: denominator is total_rounds, not skill-present rounds.
+        """
+        if self._rounds_elapsed == 0:
+            return 0.0
+        return self._skills_that_improved_reward / self._rounds_elapsed
+
+    def capability_horizon(self) -> int:
+        """BN-08: count of solvable domains that didn't exist at round 0.
+
+        Anti-cheat E10: excludes initial domains AND NOVEL_DOMAINS.
+        """
+        return len(self._skill_derived_domain_names - self._initial_domains)
+
+    def emergence_depth(self) -> int:
+        """BN-08: longest causal chain depth."""
+        return self._recursive_depth
 
     def tick_round(self) -> None:
         """Record that a round has elapsed.

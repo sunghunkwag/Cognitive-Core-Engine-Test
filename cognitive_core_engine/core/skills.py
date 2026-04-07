@@ -138,6 +138,8 @@ class SkillLibrary:
     def __init__(self, max_skills: int = 3000) -> None:
         self.max_skills = max_skills
         self._skills: Dict[str, Skill] = {}
+        self.skill_performance_log: Dict[str, List[float]] = {}
+        self._perf_log_active: bool = False
 
     def add(self, sk: Skill) -> str:
         self._skills[sk.id] = sk
@@ -145,6 +147,31 @@ class SkillLibrary:
             for sid in list(self._skills.keys())[: len(self._skills) - self.max_skills]:
                 self._skills.pop(sid, None)
         return sk.id
+
+    def register(self, sk: Skill) -> str:
+        """Register a skill (alias for add, used by RSI pipeline)."""
+        return self.add(sk)
+
+    def vm_skills(self) -> List[Skill]:
+        """Return only RSI-originated skills (tagged 'rsi')."""
+        return [s for s in self._skills.values() if "rsi" in s.tags]
+
+    def log_skill_performance(self, skill_id: str, reward: float) -> None:
+        """Record a reward observation for a skill (append-only).
+
+        Anti-cheat E4: once the first entry is logged, the log
+        cannot be cleared or rewritten.
+        """
+        self._perf_log_active = True
+        if skill_id not in self.skill_performance_log:
+            self.skill_performance_log[skill_id] = []
+        self.skill_performance_log[skill_id].append(float(reward))
+
+    def clear_performance_log(self) -> None:
+        """Attempt to clear — raises if log is active (anti-cheat E4)."""
+        if self._perf_log_active:
+            raise RuntimeError("Performance log is append-only after first entry")
+        self.skill_performance_log.clear()
 
     def list(self, tag: Optional[str] = None) -> List[Skill]:
         vals = list(self._skills.values())

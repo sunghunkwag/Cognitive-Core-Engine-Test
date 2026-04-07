@@ -87,6 +87,10 @@ class GoalGenerator:
         # Domain fingerprint registry: maps domain_name -> frozenset of structural tokens.
         # Two domains with the same fingerprint are considered duplicates.
         self._domain_fingerprints: Dict[str, frozenset] = {}
+        # BN-08: Skill-derived goals
+        self._skill_goal_links: Dict[str, str] = {}  # (trigger_skill_id, goal_name) pairs
+        self._skill_derived_goals: List[TaskSpec] = []
+        self._all_generated_goal_names: set = set()
 
     def _domain_fingerprint(self, domain: str) -> frozenset:
         """Compute structural fingerprint for a domain name.
@@ -119,6 +123,62 @@ class GoalGenerator:
         Fallback: defaults to normal weights if not stagnating.
         """
         self._stagnating = stagnating
+
+    def on_skill_registered(self, event: Dict[str, Any]) -> List[TaskSpec]:
+        """BN-08 Phase 3: Generate goals that exploit a newly registered skill.
+
+        For each capability the skill provides, create a higher-difficulty goal
+        in a skill-derived domain.
+
+        Anti-cheat E5: each (trigger_skill_id, goal_name) must be unique.
+        Anti-cheat E6: goal names must not clash with HARDCODED_TASK_NAMES or
+        previously generated goal names.
+        """
+        skill_id = event.get("skill_id", "unknown")
+        capabilities = event.get("capabilities", [])
+        genome_fitness = event.get("genome_fitness", 0.0)
+        new_goals: List[TaskSpec] = []
+
+        # Determine current max difficulty from competence map
+        all_keys = self.competence_map.all_keys()
+        max_diff = max((d for _, d in all_keys), default=3)
+
+        for cap in capabilities:
+            # Build unique goal name
+            goal_name = f"skill_exploit_{cap}_d{max_diff + 1}_{skill_id[:8]}"
+
+            # Anti-cheat E6: ensure uniqueness
+            if goal_name in HARDCODED_TASK_NAMES or goal_name in self._all_generated_goal_names:
+                goal_name = f"skill_exploit_{cap}_d{max_diff + 1}_{skill_id[:8]}_{self.rng.randint(100, 999)}"
+
+            # Anti-cheat E5: unique link
+            link_key = f"{skill_id}:{goal_name}"
+            if link_key in self._skill_goal_links:
+                continue
+
+            domain = f"skill-derived-{cap}"
+            goal = TaskSpec(
+                name=goal_name,
+                difficulty=min(MAX_DIFFICULTY, max_diff + 1),
+                baseline=max(0.05, genome_fitness * 0.5),
+                domain=domain,
+            )
+            self._skill_goal_links[link_key] = goal_name
+            self._all_generated_goal_names.add(goal_name)
+            self._skill_derived_goals.append(goal)
+            new_goals.append(goal)
+
+        return new_goals
+
+    def get_skill_derived_goals(self) -> List[TaskSpec]:
+        """BN-08: Return pending skill-derived goals and clear the queue.
+
+        These goals are prioritized in the task mix with weight 0.4
+        when available, reducing frontier/gap/creative proportionally.
+        """
+        goals = list(self._skill_derived_goals)
+        self._skill_derived_goals.clear()
+        return goals
 
     def _get_weights(self) -> Tuple[float, float, float]:
         """Return (frontier, gap, creative) weights based on current state.
