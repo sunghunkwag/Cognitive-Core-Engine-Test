@@ -216,38 +216,10 @@ class TestCapabilityHorizonExcludesNovelDomains(unittest.TestCase):
 
 
 class TestRsiSkillIdResetPerStep(unittest.TestCase):
-    """F4: _last_consulted_rsi_skill_id is None at start of each act_on_project."""
+    """F4: _last_consulted_rsi_skill_id is reset to None at start of act_on_project."""
 
     def test_rsi_skill_id_reset_per_step(self):
-        from cognitive_core_engine.core.agent import Agent, AgentConfig
-        from cognitive_core_engine.core.tools import ToolRegistry
-        from cognitive_core_engine.core.memory import SharedMemory
-        from cognitive_core_engine.core.skills import SkillLibrary
-
-        cfg = AgentConfig(name="test_agent", role="builder")
-        agent = Agent(cfg, ToolRegistry(), SharedMemory(), SkillLibrary())
-
-        # Initially None
-        self.assertIsNone(agent._last_consulted_rsi_skill_id)
-        self.assertFalse(agent._rsi_skill_accepted)
-
-        # Set it manually (simulate skill consultation)
-        agent._last_consulted_rsi_skill_id = "sk_test"
-        agent._rsi_skill_accepted = True
-
-        # Call act_on_project — it should reset at the top
-        # We can't easily run the full method without env, but we can verify
-        # the reset fields exist and are settable
-        agent._last_consulted_rsi_skill_id = None
-        agent._rsi_skill_accepted = False
-        self.assertIsNone(agent._last_consulted_rsi_skill_id)
-        self.assertFalse(agent._rsi_skill_accepted)
-
-
-class TestGovernanceThresholdFloor(unittest.TestCase):
-    """F5: Governance threshold never goes below 0.10."""
-
-    def test_governance_threshold_floor(self):
+        """Run 2 agent steps via full orchestrator and verify reset behavior."""
         from cognitive_core_engine.core.environment import ResearchEnvironment
         from cognitive_core_engine.core.tools import (
             ToolRegistry, tool_write_note_factory, tool_write_artifact_factory,
@@ -265,10 +237,95 @@ class TestGovernanceThresholdFloor(unittest.TestCase):
         tools.register("evaluate_candidate", tool_evaluate_candidate)
         tools.register("tool_build_report", tool_tool_build_report)
 
-        # Even if we set threshold to 0.10, candidate with 0.05 should be rejected
-        orch.evaluation_rules["min_holdout_pass_rate"] = 0.10
-        # Verify the threshold is respected
-        self.assertGreaterEqual(orch.evaluation_rules["min_holdout_pass_rate"], 0.10)
+        # Manually set skill ID on an agent before running a round
+        agent = orch._agents[0]
+        agent._last_consulted_rsi_skill_id = "sk_stale"
+        agent._rsi_skill_accepted = True
+
+        # Run a round — act_on_project() should reset these at the top
+        out = orch.run_round(0)
+
+        # After the round, the agent's fields should be reset (the last
+        # act_on_project call resets them at entry)
+        self.assertIsNone(agent._last_consulted_rsi_skill_id,
+                          "Stale RSI skill ID was not reset by act_on_project")
+        self.assertFalse(agent._rsi_skill_accepted,
+                         "Stale RSI acceptance flag was not reset by act_on_project")
+
+
+class TestGovernanceThresholdFloor(unittest.TestCase):
+    """F5: Non-L0 governance threshold never goes below 0.10."""
+
+    def test_governance_threshold_floor_non_l0(self):
+        """Non-L0 proposals use the original evaluation_rules threshold."""
+        from cognitive_core_engine.core.environment import ResearchEnvironment, RuleProposal
+        from cognitive_core_engine.core.tools import (
+            ToolRegistry, tool_write_note_factory, tool_write_artifact_factory,
+            tool_evaluate_candidate, tool_tool_build_report,
+        )
+        from cognitive_core_engine.core.orchestrator import Orchestrator, OrchestratorConfig
+        from cognitive_core_engine.core.utils import now_ms
+
+        random.seed(42)
+        env = ResearchEnvironment(seed=42)
+        tools = ToolRegistry()
+        cfg = OrchestratorConfig(agents=2, base_budget=10, selection_top_k=1)
+        orch = Orchestrator(cfg, env, tools)
+        tools.register("write_note", tool_write_note_factory(orch.mem))
+        tools.register("write_artifact", tool_write_artifact_factory(orch.mem))
+        tools.register("evaluate_candidate", tool_evaluate_candidate)
+        tools.register("tool_build_report", tool_tool_build_report)
+
+        # Default min_holdout_pass_rate should be >= 0.10
+        self.assertGreaterEqual(
+            orch.evaluation_rules["min_holdout_pass_rate"], 0.10,
+            "Default holdout threshold must be >= 0.10")
+
+        # L1 proposal should use the original threshold, not L0 relaxation
+        l1_proposal = RuleProposal(
+            proposal_id="l1_floor_test", level="L1",
+            payload={"evaluation_update": {"min_score": 0.3}},
+            creator_key="test", created_ms=now_ms(), evidence={})
+        verdict = orch._critic_evaluate(l1_proposal)
+        # L1 verdicts don't relax holdout — threshold stays >= 0.10
+        self.assertGreaterEqual(
+            orch.evaluation_rules["min_holdout_pass_rate"], 0.10,
+            "L1 evaluation must not relax holdout threshold below 0.10")
+
+    def test_l0_floor_is_zero_for_evolutionary(self):
+        """L0 proposals relax holdout to 0.0 (quarantine is the real safety gate)."""
+        from cognitive_core_engine.core.environment import ResearchEnvironment, RuleProposal
+        from cognitive_core_engine.core.tools import (
+            ToolRegistry, tool_write_note_factory, tool_write_artifact_factory,
+            tool_evaluate_candidate, tool_tool_build_report,
+        )
+        from cognitive_core_engine.core.orchestrator import Orchestrator, OrchestratorConfig
+        from cognitive_core_engine.core.utils import stable_hash, now_ms
+
+        random.seed(42)
+        env = ResearchEnvironment(seed=42)
+        tools = ToolRegistry()
+        cfg = OrchestratorConfig(agents=2, base_budget=10, selection_top_k=1)
+        orch = Orchestrator(cfg, env, tools)
+        tools.register("write_note", tool_write_note_factory(orch.mem))
+        tools.register("write_artifact", tool_write_artifact_factory(orch.mem))
+        tools.register("evaluate_candidate", tool_evaluate_candidate)
+        tools.register("tool_build_report", tool_tool_build_report)
+
+        # OmegaForge-originated L0 with holdout=0.0 should be approved
+        # (floor relaxed to 0.0, quarantine is the real safety gate)
+        l0_proposal = RuleProposal(
+            proposal_id="l0_floor_test", level="L0",
+            payload={"candidate": {
+                "gid": "test_genome",
+                "metrics": {"holdout_pass_rate": 0.0, "train_pass_rate": 0.0,
+                             "discovery_cost": {"holdout": 0.5}},
+            }, "_omega_evolved": True},
+            creator_key="test", created_ms=now_ms(),
+            evidence={"metrics": {"holdout_pass_rate": 0.0}})
+        verdict = orch._critic_evaluate(l0_proposal)
+        self.assertEqual(verdict["verdict"], "approve",
+                         f"OmegaForge L0 with holdout=0.0 should be approved, got: {verdict.get('reason')}")
 
 
 class TestCausalChainDepthFromRun(unittest.TestCase):
