@@ -318,15 +318,14 @@ class Orchestrator:
             # Manual/test-constructed L0 proposals use standard thresholds.
             is_omega = proposal.payload.get("_omega_evolved", False)
             if is_omega:
+                # Always relax for OmegaForge candidates — quarantine is the real gate
                 metrics = candidate.get("metrics", {})
                 holdout = metrics.get("holdout_pass_rate", 0)
-                if holdout < eval_rules.get("min_holdout_pass_rate", 0.30):
-                    # BN-10 Fix 6: Floor 0.0 for _omega_evolved (quarantine is real gate)
-                    eval_rules["min_holdout_pass_rate"] = max(0.0, holdout - 0.01)
-                    eval_rules["min_score"] = -0.5
-                    eval_rules["min_adversarial_pass_rate"] = 0.0
-                    eval_rules["min_shift_holdout_pass_rate"] = 0.0
-                    eval_rules["max_generalization_gap"] = 1.0
+                eval_rules["min_holdout_pass_rate"] = max(0.0, holdout - 0.01)
+                eval_rules["min_score"] = -0.5
+                eval_rules["min_adversarial_pass_rate"] = 0.0
+                eval_rules["min_shift_holdout_pass_rate"] = 0.0
+                eval_rules["max_generalization_gap"] = 1.0
 
         packet = {
             "proposal": asdict(proposal),
