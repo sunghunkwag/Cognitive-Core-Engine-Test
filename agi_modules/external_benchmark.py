@@ -95,7 +95,9 @@ class LocalArcAgiDataset:
           "test":  [{"input": [[...]], "output": [[...]]}, ...]
         }
 
-    The evaluator calls `solve_fn(input_grid) -> output_grid`.  If no
+    The evaluator calls `solve_fn(task_context) -> output_grid` where
+    task_context is a dict with "train" pairs and "test_input" grid
+    (test output is NOT included — train-test firewall).  If no
     solve_fn is provided, accuracy = 0.0 (no trivial bypass).
     """
 
@@ -128,13 +130,18 @@ class LocalArcAgiDataset:
         for task_idx, task in enumerate(self.tasks):
             test_pairs = task.get("test", [])
             for pair_idx, pair in enumerate(test_pairs):
-                inp = pair.get("input")
                 expected = pair.get("output")
                 total += 1
                 if solve_fn is None:
                     continue  # no solver → no score
                 try:
-                    prediction = solve_fn(inp)
+                    # Pass full task context (train pairs + test input)
+                    # but NOT the test output (train-test firewall)
+                    task_context = {
+                        "train": task.get("train", []),
+                        "test_input": pair.get("input"),
+                    }
+                    prediction = solve_fn(task_context)
                     if prediction == expected:
                         solved += 1
                 except Exception as exc:

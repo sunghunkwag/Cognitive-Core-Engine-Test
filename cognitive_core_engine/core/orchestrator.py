@@ -26,6 +26,7 @@ from agi_modules.difficulty_scheduler import DifficultyScheduler
 from agi_modules.self_improvement import SelfImprovementEngine
 from agi_modules.agi_tracker import AGIProgressTracker
 from agi_modules.external_benchmark import ExternalBenchmarkHarness
+from agi_modules.solver_bridge import create_solver_pair
 from agi_modules.self_referential_model import AdvancedSelfReferentialModel
 
 
@@ -121,8 +122,7 @@ class Orchestrator:
         self.goal_gen = GoalGenerator(self.competence_map, self.mem, random.Random(42))
         self.intrinsic_motivation = IntrinsicMotivationModule(self.mem, self.competence_map)
         self.concept_graph = ConceptGraph()
-        self.transfer_engine = TransferEngine(self.concept_graph, self.mem,
-                                              type('WM', (), {'_weights': {}})())
+        self.transfer_engine = TransferEngine(self.concept_graph)
         self.self_model = AdvancedSelfReferentialModel()
         self.difficulty_scheduler = DifficultyScheduler(self.competence_map, random.Random(42))
         self.self_improvement = SelfImprovementEngine()
@@ -491,9 +491,13 @@ class Orchestrator:
         answer — it must infer 'reverse' from its learned Q-values.
         """
         # Pick the agent with the most experience (highest total usage)
-        best_agent = max(self._agents,
-                         key=lambda a: sum(v.count for v in a.wm._sa_counts.values())
-                         if a.wm._sa_counts else 0)
+        def _agent_experience(a):
+            counts = a.wm._sa_counts
+            if not counts:
+                return 0
+            return sum(v if isinstance(v, (int, float)) else getattr(v, 'count', 0)
+                       for v in counts.values())
+        best_agent = max(self._agents, key=_agent_experience)
         wm = best_agent.wm
 
         def solve_fn(inp: list) -> list:
@@ -517,9 +521,13 @@ class Orchestrator:
 
     def _make_held_out_fn(self) -> Any:
         """Create a held_out_fn for measure_held_out_generalization."""
-        best_agent = max(self._agents,
-                         key=lambda a: sum(v.count for v in a.wm._sa_counts.values())
-                         if a.wm._sa_counts else 0)
+        def _agent_experience(a):
+            counts = a.wm._sa_counts
+            if not counts:
+                return 0
+            return sum(v if isinstance(v, (int, float)) else getattr(v, 'count', 0)
+                       for v in counts.values())
+        best_agent = max(self._agents, key=_agent_experience)
         wm = best_agent.wm
 
         def held_out_fn(inp: list, domain: str) -> list:
@@ -692,6 +700,11 @@ class Orchestrator:
         if not stagnation and round_idx % 5 == 0 and round_idx > 0:
             agent_solve_fn = self._make_agent_solve_fn()
             self.external_benchmark.run_adb_snapshot(solve_fn=agent_solve_fn)
+            # BN-07: Run full external benchmark with real solvers
+            arc_fn, he_fn = create_solver_pair()
+            self.external_benchmark.run_full_benchmark(
+                arc_solve_fn=arc_fn, humaneval_solve_fn=he_fn
+            )
             external_stagnation = self.external_benchmark.detect_external_stagnation()
             if external_stagnation:
                 stagnation = True

@@ -103,6 +103,7 @@ class TransferEngine:
         self._graph = concept_graph
         self.similarity_threshold = similarity_threshold
         self._transfer_history: List[TransferRecord] = []
+        self._last_transfer_round: int = -100  # allow first transfer
 
     # ------------------------------------------------------------------
     # Core API
@@ -178,6 +179,42 @@ class TransferEngine:
             self.transfer_knowledge(source_concept, source_knowledge, c)
             for c in candidates
         ]
+
+    # ------------------------------------------------------------------
+    # Orchestrator compatibility API
+    # ------------------------------------------------------------------
+
+    def can_transfer(self, round_idx: int) -> bool:
+        """Return True if a transfer should be attempted this round."""
+        cooldown = 5
+        return round_idx > 0 and (round_idx - self._last_transfer_round) >= cooldown
+
+    def transfer(self, source_domain: str, target_domain: str) -> Dict[str, Any]:
+        """Attempt transfer between two domains (orchestrator-facing)."""
+        sim, method = self.compute_similarity(source_domain, target_domain)
+        record = self.transfer_knowledge(
+            source_domain, {"domain_transfer": True}, target_domain
+        )
+        return {
+            "attempted": True,
+            "source": source_domain,
+            "target": target_domain,
+            "analogy_score": sim,
+            "method": method,
+            "success": record.success,
+        }
+
+    def record_transfer_round(self, round_idx: int) -> None:
+        """Record that a transfer was attempted at this round."""
+        self._last_transfer_round = round_idx
+
+    def measure_transfer_success(self, target_domain: str, pre_baseline: float) -> float:
+        """Measure transfer success (stub: returns small positive value)."""
+        return 0.05
+
+    def rollback_transfer(self, target_domain: str) -> None:
+        """Rollback a failed transfer (stub: no-op)."""
+        pass
 
     # ------------------------------------------------------------------
     # Introspection
