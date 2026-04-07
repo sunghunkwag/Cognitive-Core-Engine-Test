@@ -14,6 +14,7 @@ cognitive_core_engine/
     memory.py                 MemoryItem, SharedMemory
     tools.py                  ToolRegistry, tool factories
     skills.py                 SkillStep, Skill, SkillLibrary (vm_skills, perf log)
+    algorithm_env.py          AlgorithmSynthesisEnvironment, task hierarchy L0-L4
     world_model.py            TransitionSummary, WorldModel (TD learning)
     planner.py                PlanCandidate, Planner (beam search)
     project_graph.py          ProjectNode, ProjectGraph
@@ -68,6 +69,7 @@ tests/
   test_benchmarks.py          ADB, ARC, program synthesis benchmarks
   test_agi_integration.py     11 integration tests + anti-cheat audit
   test_solvers.py             21 solver tests with anti-cheat checks (BN-07)
+  test_algorithm_env.py       41 algorithm synthesis environment tests (A1-A7, B1-B12, C1-C8)
   test_emergence.py           10 emergence mechanism tests (BN-08)
   test_flow.py                10 recursive loop plumbing tests (BN-09)
 scripts/
@@ -118,6 +120,21 @@ Orchestrator.run_recursive_cycle()
   |-- AGIProgressTracker.tick_round()    [5+3 axis measurement — BN-08]
   |-- ExternalBenchmark.run_full_benchmark() [ARC-AGI + HumanEval — BN-03/07]
   `-- CausalChainTracker.record_*()      [recursive emergence tracking — BN-08]
+```
+
+### Algorithm Synthesis Environment
+
+```
+Agent → submit_program(ProgramGenome) → VM execute on test cases → compare to oracle → reward
+
+Level 0: Single-pass (SUM, MAX, MIN, COUNT)
+Level 1: Conditional (COUNT_POSITIVE, SUM_ABOVE_THRESHOLD, CLAMP, FILTER_SUM)
+Level 2: Nested loops (BUBBLE_SORT, REVERSE, UNIQUE_COUNT, INNER_PRODUCT)
+Level 3: Subroutines (SORT_SUM_TOP_K, MAX_ADJACENT_SUMS, NORMALIZE)
+Level 4: Meta-programs (COMPOSE_SUM_MAX, EVAL_AND_COMPARE)
+
+Curriculum gate: Level N requires >= 60% holdout accuracy on 2+ Level N-1 tasks.
+Rewards: ONLY from holdout test case correctness (no formulas, no shaping).
 ```
 
 ### Recursive Self-Improvement Loop (BN-08 + BN-09)
@@ -231,7 +248,8 @@ Self-improvement score reflects governance-gated scoring with mandatory holdout 
 ## Scope & Limitations
 
 - External benchmark scores of 1.000 reflect 20 simple bundled ARC tasks and 10 basic HumanEval problems — NOT the full public benchmarks
-- Recursive emergence (BN-08/09) is stochastic — skill births depend on OmegaForge evolution producing structurally valid programs, which is rare in short runs
+- Level 4 meta-programs are extremely unlikely to emerge in short runs — the curriculum gate requires solving Level 0-3 first
+- Recursive emergence (BN-08/09/10) is stochastic — skill births depend on OmegaForge evolution producing structurally valid programs
 - Concept graph depth (5) partially driven by threshold calibration
 - Meta-rollout confidence decays with depth; predictions beyond 3 steps are low-confidence
 - All environments simulated; no real-world grounding

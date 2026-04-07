@@ -43,7 +43,7 @@ class OmegaForgeV13:
         config: Optional[EngineConfig] = None,
         concept_library: Optional[ConceptLibrary] = None,
     ) -> None:
-        random.seed(seed)
+        self._rng = random.Random(seed)
         self.seed = seed
         self.vm = vm or VirtualMachine()
         self.detector = detector or StrictStructuralDetector()
@@ -108,7 +108,7 @@ class OmegaForgeV13:
         ]
         template = templates[idx % len(templates)]
         # Add some random padding
-        padding = [rand_inst() for _ in range(random.randint(3, 8))]
+        padding = [rand_inst() for _ in range(random.Random(idx).randint(3, 8))]
         return [i.clone() for i in template] + padding + [Instruction("HALT", 0, 0, 0)]
 
     def init_population(self) -> None:
@@ -118,7 +118,7 @@ class OmegaForgeV13:
             if i < self.cfg.pop_size // 2:
                 insts = self._make_input_reading_genome(i)
             else:
-                L = random.randint(self.cfg.init_len_min, self.cfg.init_len_max)
+                L = self._rng.randint(self.cfg.init_len_min, self.cfg.init_len_max)
                 insts = [rand_inst() for _ in range(L)]
                 insts.append(Instruction("HALT", 0, 0, 0))
             g = ProgramGenome(gid=f"init_{i}", instructions=insts, parents=[], generation=0)
@@ -138,8 +138,8 @@ class OmegaForgeV13:
         """BN-10 Fix 8: Single-point crossover between two parents."""
         if not parent_a.instructions or not parent_b.instructions:
             return self.mutate(parent_a)
-        cut_a = random.randint(1, max(1, len(parent_a.instructions) - 1))
-        cut_b = random.randint(1, max(1, len(parent_b.instructions) - 1))
+        cut_a = self._rng.randint(1, max(1, len(parent_a.instructions) - 1))
+        cut_b = self._rng.randint(1, max(1, len(parent_b.instructions) - 1))
         child_insts = [i.clone() for i in parent_a.instructions[:cut_a]]
         child_insts += [i.clone() for i in parent_b.instructions[cut_b:]]
         # Trim to max code length
@@ -148,7 +148,7 @@ class OmegaForgeV13:
         if not any(i.op == "HALT" for i in child_insts):
             child_insts.append(Instruction("HALT", 0, 0, 0))
         child = ProgramGenome(
-            gid=f"x{self.generation}_{random.randint(0, 999999)}",
+            gid=f"x{self.generation}_{self._rng.randint(0, 999999)}",
             instructions=child_insts,
             parents=[parent_a.gid, parent_b.gid],
             generation=self.generation,
@@ -160,29 +160,29 @@ class OmegaForgeV13:
         child = parent.clone()
         child.generation = self.generation
         child.parents = [parent.gid]
-        child.gid = f"g{self.generation}_{random.randint(0, 999999)}"
+        child.gid = f"g{self.generation}_{self._rng.randint(0, 999999)}"
 
         # BN-10 Fix 8 (AC9): New strategies are ADDITIONS, not replacements.
         # Probability table: 15% task-macro, 12% concept, 43% original (split proportionally)
         # Original 4 ops: 20% splice, 25% control, 30% insert, 25% delete → scaled to 43%
-        roll = random.random()
+        roll = self._rng.random()
 
         # 15% task-macro insertion (NEW)
         if roll < 0.15 and _HAS_MACROS and len(child.instructions) + 10 < self.cfg.max_code_len:
-            macro_fn = random.choice([
+            macro_fn = self._rng.choice([
                 TaskMacroLibrary.sum_skeleton,
                 TaskMacroLibrary.max_skeleton,
                 TaskMacroLibrary.double_skeleton,
             ])
             macro = macro_fn()
-            pos = random.randint(0, len(child.instructions))
+            pos = self._rng.randint(0, len(child.instructions))
             child.instructions[pos:pos] = [m.clone() for m in macro]
 
         # 12% concept-based mutation (NEW)
         elif roll < 0.27:
             concepts = list(self.concept_library._concepts.values()) if hasattr(self.concept_library, '_concepts') else []
             if concepts and len(child.instructions) + 5 < self.cfg.max_code_len:
-                concept = random.choice(concepts)
+                concept = self._rng.choice(concepts)
                 payload = concept.payload if hasattr(concept, 'payload') else []
                 if isinstance(payload, list) and payload:
                     insts = []
@@ -190,33 +190,33 @@ class OmegaForgeV13:
                         if isinstance(item, (list, tuple)) and len(item) >= 4:
                             insts.append(Instruction(str(item[0]), int(item[1]), int(item[2]), int(item[3])))
                     if insts:
-                        pos = random.randint(0, len(child.instructions))
+                        pos = self._rng.randint(0, len(child.instructions))
                         child.instructions[pos:pos] = insts
             else:
                 # Fallback to random instruction insertion
                 if len(child.instructions) < self.cfg.max_code_len:
-                    pos = random.randint(0, len(child.instructions))
+                    pos = self._rng.randint(0, len(child.instructions))
                     child.instructions.insert(pos, rand_inst())
 
         # Remaining 73% split among original 4 operators (proportionally)
         elif roll < 0.40 and len(child.instructions) + 5 < self.cfg.max_code_len:
             # splice macro (original)
-            macro = MacroLibrary.loop_skeleton() if random.random() < 0.7 else MacroLibrary.call_skeleton()
-            pos = random.randint(0, len(child.instructions))
+            macro = MacroLibrary.loop_skeleton() if self._rng.random() < 0.7 else MacroLibrary.call_skeleton()
+            pos = self._rng.randint(0, len(child.instructions))
             child.instructions[pos:pos] = [m.clone() for m in macro]
         elif roll < 0.56 and child.instructions:
             # replace with control op (original)
-            pos = random.randint(0, len(child.instructions) - 1)
-            op = random.choice(list(CONTROL_OPS))
-            child.instructions[pos] = Instruction(op, random.randint(-8, 8), random.randint(0, 7), random.randint(0, 7))
+            pos = self._rng.randint(0, len(child.instructions) - 1)
+            op = self._rng.choice(list(CONTROL_OPS))
+            child.instructions[pos] = Instruction(op, self._rng.randint(-8, 8), self._rng.randint(0, 7), self._rng.randint(0, 7))
         elif roll < 0.76 and len(child.instructions) < self.cfg.max_code_len:
             # insert random instruction (original)
-            pos = random.randint(0, len(child.instructions))
+            pos = self._rng.randint(0, len(child.instructions))
             child.instructions.insert(pos, rand_inst())
         else:
             # delete (original)
             if len(child.instructions) > 6:
-                pos = random.randint(0, len(child.instructions) - 1)
+                pos = self._rng.randint(0, len(child.instructions) - 1)
                 child.instructions.pop(pos)
 
         # BN-10: Ensure child always has at least one HALT instruction
@@ -390,8 +390,8 @@ class OmegaForgeV13:
             next_pop.append(kept)
             for _ in range(self.cfg.children_per_elite):
                 # BN-10 Fix 8: 30% crossover, 70% mutation (AC9)
-                if random.random() < 0.30 and len(elites) >= 2:
-                    partner = random.choice([x for x in elites if x.gid != e.gid] or elites)
+                if self._rng.random() < 0.30 and len(elites) >= 2:
+                    partner = self._rng.choice([x for x in elites if x.gid != e.gid] or elites)
                     next_pop.append(self.crossover(e, partner))
                 else:
                     next_pop.append(self.mutate(e))

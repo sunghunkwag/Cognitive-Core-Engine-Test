@@ -216,5 +216,37 @@ Chain depth of 4 was achieved in a 30-round run with seed=12345. Results are see
 - ConceptGraph depth is partially driven by threshold calibration
 - TransferEngine HDC similarity improves over name-heuristics but analogy quality remains limited
 
+## 11. Algorithm Synthesis Environment
+
+The AlgorithmSynthesisEnvironment replaces formula-based rewards with correctness-only
+rewards from VM program execution on algorithmic tasks.
+
+### Task Hierarchy
+
+| Level | Tasks | Train/Holdout | Difficulty |
+|-------|-------|---------------|------------|
+| 0 | SUM, MAX, MIN, COUNT | 20/10 | Single-pass accumulation |
+| 1 | COUNT_POSITIVE, SUM_ABOVE_THRESHOLD, CLAMP, FILTER_SUM | 15/10 | Conditional accumulation |
+| 2 | BUBBLE_SORT, REVERSE, UNIQUE_COUNT, INNER_PRODUCT | 10/8 | Nested loops |
+| 3 | SORT_SUM_TOP_K, MAX_ADJACENT_SUMS, NORMALIZE | 8/6 | Subroutine composition |
+| 4 | COMPOSE_SUM_MAX, EVAL_AND_COMPARE | 5/5 | Meta-programs |
+
+### Anti-Cheat Enforcement
+- AC-E1: VM timeout 500 steps
+- AC-E2: Constant-output programs get reward 0.0
+- AC-E3: Rewards from vm.execute() comparison ONLY
+- AC-E4: Reward computed on holdout cases only (train visible to agent)
+- AC-E5: No reward smoothing/shaping/intrinsic components
+- AC-E6: No structural bonuses
+- AC-E7: Challenger oracles validated at runtime
+
+### Curriculum Gate
+Level N requires >= 60% holdout accuracy on 2+ Level N-1 tasks. No time-based unlock.
+
+### Note
+The formula-based ResearchEnvironment is retained as legacy fallback. The
+AlgorithmSynthesisEnvironment provides a stricter evaluation where the ONLY
+path to reward > 0 is producing correct program output.
+
 ---
 Seed: 42 | Rounds: 50 | Time: 29.5s | Branch: claude/wire-solvers-benchmarks-YoewQ
