@@ -189,7 +189,76 @@ class Agent:
             return ["build_tool", "attempt_breakthrough", "write_verified_note", "tune_orchestration"]
         if r == "strategist":
             return ["tune_orchestration", "attempt_breakthrough", "build_tool", "write_verified_note"]
+        # Phase 4: Adversarial roles
+        if r == "challenger":
+            return ["generate_challenge", "submit_program", "attempt_breakthrough", "build_tool"]
+        if r == "meta_optimizer":
+            return ["submit_program", "compose_skills", "tune_orchestration", "attempt_breakthrough"]
         return base
+
+    # ------------------------------------------------------------------
+    # Phase 4: New action implementations
+    # ------------------------------------------------------------------
+
+    def _act_submit_program(self, obs: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+        """Submit the best genome from OmegaForge population (AC-A2)."""
+        forge = obs.get("forge_engine")
+        if forge is None or not hasattr(forge, "population") or not forge.population:
+            return ("submit_program", {"genome": None})
+        ranked = sorted(forge.population, key=lambda g: g.last_score, reverse=True)
+        best = ranked[0]
+        return ("submit_program", {
+            "genome": best,
+            "task_name": obs.get("current_task", "L0_SUM"),
+        })
+
+    def _act_compose_skills(self, obs: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+        """Compose top 2 skills by performance."""
+        skill_lib = obs.get("skill_library")
+        if skill_lib is None:
+            return ("compose_skills", {"skill_ids": []})
+        vm_skills = skill_lib.vm_skills()
+        if len(vm_skills) < 2:
+            return ("compose_skills", {"skill_ids": []})
+        # Sort by mean performance
+        def _mean_perf(sk):
+            perf = skill_lib.skill_performance_log.get(sk.id, [])
+            return sum(perf) / max(1, len(perf)) if perf else 0.0
+        ranked = sorted(vm_skills, key=_mean_perf, reverse=True)
+        return ("compose_skills", {"skill_ids": [ranked[0].id, ranked[1].id]})
+
+    def _act_generate_challenge(self, obs: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+        """Generate a challenge task with oracle (AC-A1: >= 3 unique inputs)."""
+        from cognitive_core_engine.omega_forge.instructions import Instruction, ProgramGenome
+        from cognitive_core_engine.omega_forge.stage1 import TaskMacroLibrary
+
+        base_seed = obs.get("step", 0)
+        for retry in range(5):
+            rng = random.Random(base_seed + retry * 1000)
+            inputs_list = []
+            for _ in range(5):
+                n = rng.randint(2, 6)
+                inp = [float(rng.randint(-9, 9)) for _ in range(n)]
+                inputs_list.append(inp)
+            # AC-A1: Check uniqueness
+            unique = set(str(inp) for inp in inputs_list)
+            if len(unique) >= 3:
+                break
+        else:
+            return ("generate_challenge", {"error": "insufficient_unique_inputs"})
+
+        expected_list = [sum(inp) for inp in inputs_list]
+
+        # Build oracle genome from known-good SUM instructions
+        oracle_insts = TaskMacroLibrary.sum_skeleton()
+        oracle_insts.append(Instruction("HALT", 0, 0, 0))
+        oracle_genome = ProgramGenome(gid="challenge_oracle", instructions=oracle_insts)
+
+        return ("generate_challenge", {
+            "inputs_list": inputs_list,
+            "expected_outputs_list": expected_list,
+            "oracle_genome": oracle_genome,
+        })
 
     # ------------------------------------------------------------------
     # Action selection (BN-06 integrated)

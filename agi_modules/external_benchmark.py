@@ -494,3 +494,47 @@ class ExternalBenchmarkHarness:
 
     def get_external_score_history(self) -> List[float]:
         return list(self._external_scores)
+
+    def validate_algorithm_env(self, algo_env: Any) -> Dict[str, Any]:
+        """Validate AlgorithmSynthesisEnvironment tasks using external holdout.
+
+        AC-A5: External cases must NOT overlap with holdout cases.
+        """
+        tasks_validated = 0
+        total_passed = 0
+        total_cases = 0
+
+        algo_tasks = getattr(algo_env, '_algo_tasks', {})
+        solved = getattr(algo_env, '_solved_programs', [])
+        vm = getattr(algo_env, '_vm', None)
+
+        for task_name, task in algo_tasks.items():
+            ext_cases = getattr(task, 'external_cases', [])
+            ho_cases = getattr(task, 'holdout_cases', [])
+            if not ext_cases:
+                continue
+
+            # AC-A5: Verify disjointness
+            ext_ids = set(id(c) for c in ext_cases)
+            ho_ids = set(id(c) for c in ho_cases)
+            assert ext_ids.isdisjoint(ho_ids), \
+                f"External and holdout cases overlap for {task_name}"
+
+            tasks_validated += 1
+            # Run best solved program against external cases
+            if solved and vm:
+                best = solved[-1]  # most recently solved
+                for case in ext_cases:
+                    total_cases += 1
+                    try:
+                        st = vm.execute(best, case.inputs)
+                        if case.expected_reg0 is not None:
+                            if abs(st.regs[0] - case.expected_reg0) < case.tolerance:
+                                total_passed += 1
+                    except Exception:
+                        pass
+
+        return {
+            "tasks_validated": tasks_validated,
+            "external_pass_rate": total_passed / max(1, total_cases),
+        }

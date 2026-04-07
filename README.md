@@ -69,7 +69,7 @@ tests/
   test_benchmarks.py          ADB, ARC, program synthesis benchmarks
   test_agi_integration.py     11 integration tests + anti-cheat audit
   test_solvers.py             21 solver tests with anti-cheat checks (BN-07)
-  test_algorithm_env.py       41 algorithm synthesis environment tests (A1-A7, B1-B12, C1-C8)
+  test_algorithm_env.py       59 algorithm synthesis tests (A1-A7, B1-B12, C1-C8, D1-D8, F1-F10)
   test_emergence.py           10 emergence mechanism tests (BN-08)
   test_flow.py                10 recursive loop plumbing tests (BN-09)
 scripts/
@@ -132,9 +132,14 @@ Level 1: Conditional (COUNT_POSITIVE, SUM_ABOVE_THRESHOLD, CLAMP, FILTER_SUM)
 Level 2: Nested loops (BUBBLE_SORT, REVERSE, UNIQUE_COUNT, INNER_PRODUCT)
 Level 3: Subroutines (SORT_SUM_TOP_K, MAX_ADJACENT_SUMS, NORMALIZE)
 Level 4: Meta-programs (COMPOSE_SUM_MAX, EVAL_AND_COMPARE)
+Level 5: Self-referential (IMPROVE_EVOLUTION_YIELD, IMPROVE_FITNESS_DISCRIMINATION, SELF_TEST_IMPROVEMENT)
 
 Curriculum gate: Level N requires >= 60% holdout accuracy on 2+ Level N-1 tasks.
 Rewards: ONLY from holdout test case correctness (no formulas, no shaping).
+
+Adversarial Roles:
+- Challenger: generates new tasks with oracle validation
+- Meta-optimizer: tunes OmegaForge hyperparameters
 ```
 
 ### Recursive Self-Improvement Loop (BN-08 + BN-09)

@@ -54,6 +54,10 @@ class AGIProgressTracker:
         self._excluded_domains: set = set()  # BN-09 Fix 5: NOVEL_DOMAINS
         self._recursive_depth: int = 0
         self._skill_derived_domain_names: set = set()
+        # Phase 4: Algorithm synthesis metrics
+        self._algorithm_level: int = 0
+        self._sr_attempts: int = 0
+        self._sr_successes: int = 0
 
     def update_transfer(self, success: float, attempted: bool) -> None:
         """Record a transfer learning attempt and outcome.
@@ -188,6 +192,39 @@ class AGIProgressTracker:
         """BN-08: longest causal chain depth."""
         return self._recursive_depth
 
+    # ------------------------------------------------------------------
+    # Phase 4: Algorithm synthesis metrics
+    # ------------------------------------------------------------------
+
+    def update_algorithm_level(self, level: int) -> None:
+        """Track the highest algorithm task level achieved.
+
+        Feeds capability_horizon = level / 4.0 (normalized).
+        """
+        self._algorithm_level = max(self._algorithm_level, level)
+
+    def update_sr_success(self, task_name: str, reward: float) -> None:
+        """Track self-referential task attempts and successes.
+
+        Feeds self_improvement axis: SR success bumps score by 0.1 (capped).
+        """
+        self._sr_attempts += 1
+        if reward > 0.5:
+            self._sr_successes += 1
+            # Bump self-improvement score via beneficial mod tracking
+            self._beneficial_self_mods += 1
+            self._total_self_mods = max(self._total_self_mods, self._beneficial_self_mods)
+
+    def algorithm_summary(self) -> Dict[str, Any]:
+        """Return Phase 4 algorithm synthesis metrics."""
+        return {
+            "capability_horizon": self._algorithm_level / 4.0,
+            "sr_success_rate": self._sr_successes / max(1, self._sr_attempts),
+            "algorithm_level": self._algorithm_level,
+            "sr_attempts": self._sr_attempts,
+            "sr_successes": self._sr_successes,
+        }
+
     def tick_round(self) -> None:
         """Record that a round has elapsed.
 
@@ -247,6 +284,9 @@ class AGIProgressTracker:
             f"  Open-Endedness:    {scores['open_endedness']:.3f}",
             f"  Composite (geom):  {composite:.3f}",
             f"  Plateaued:         {self.is_plateaued()}",
+            f"  Algorithm Level:   {self._algorithm_level}",
+            f"  Capability Horizon:{self._algorithm_level / 4.0:.3f}",
+            f"  SR Success Rate:   {self._sr_successes / max(1, self._sr_attempts):.3f}",
         ]
         return "\n".join(lines)
 

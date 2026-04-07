@@ -30,6 +30,7 @@ from agi_modules.solver_bridge import create_solver_pair
 from cognitive_core_engine.core.causal_chain import CausalChainTracker
 from cognitive_core_engine.omega_forge.benchmark import EnvironmentCoupledFitness
 from agi_modules.self_referential_model import AdvancedSelfReferentialModel
+from cognitive_core_engine.core.algorithm_env import AlgorithmSynthesisEnvironment
 
 
 def load_unified_critic_module() -> Any:
@@ -76,10 +77,12 @@ class Orchestrator:
 
     def __init__(self, cfg: OrchestratorConfig,
                  env: ResearchEnvironment,
-                 tools: ToolRegistry) -> None:
+                 tools: ToolRegistry,
+                 env_type: str = "research") -> None:
         self.cfg = cfg
         self.env = env
         self.tools = tools
+        self._env_type = env_type
 
         self.mem = SharedMemory()
         self.skills = SkillLibrary()
@@ -143,10 +146,28 @@ class Orchestrator:
         from agi_modules.goal_generator import NOVEL_DOMAINS
         self.agi_tracker.set_excluded_domains(set(NOVEL_DOMAINS))
 
+        # Phase 4: AlgorithmSynthesisEnvironment integration
+        if env_type == "algorithm_synthesis":
+            self.algo_env: Optional[AlgorithmSynthesisEnvironment] = AlgorithmSynthesisEnvironment(seed=42)
+        else:
+            self.algo_env = None
+
         self._init_agents()
 
     def _init_agents(self) -> None:
-        roles = self._org_policy["role_mix"]
+        roles = list(self._org_policy["role_mix"])
+
+        # Phase 4 (AC-A3): Assign adversarial roles if algo mode + enough agents
+        if self._env_type == "algorithm_synthesis" and self.cfg.agents >= 3:
+            roles = list(roles)
+            # Replace last two roles with adversarial roles
+            roles.append("challenger")
+            roles.append("meta_optimizer")
+        elif self._env_type == "algorithm_synthesis" and self.cfg.agents < 3:
+            import warnings
+            warnings.warn(
+                f"Insufficient agents for adversarial roles: need >= 3, have {self.cfg.agents}")
+
         for i in range(self.cfg.agents):
             role = roles[i % len(roles)]
             cfg = AgentConfig(

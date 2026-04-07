@@ -180,6 +180,63 @@ class GoalGenerator:
         self._skill_derived_goals.clear()
         return goals
 
+    # ------------------------------------------------------------------
+    # Phase 4: Level-aware goal generation
+    # ------------------------------------------------------------------
+
+    def generate_level_aware_goal(self, current_level: int, max_level: int) -> TaskSpec:
+        """Generate a curriculum-level-appropriate goal.
+
+        AC-A4: This generates GOALS (informational), not permissions.
+        The actual gating is enforced by CurriculumGate.is_unlocked().
+        """
+        if current_level < max_level:
+            # Target next unsolved task at current level
+            domain = f"level{current_level}"
+            name = f"solve_level{current_level}_to_unlock_{current_level + 1}_{self.rng.randint(100, 999)}"
+            return TaskSpec(
+                name=name,
+                difficulty=current_level + 2,
+                baseline=0.3,
+                domain=domain,
+            )
+        elif current_level == max_level and max_level >= 4:
+            # Target self-referential tasks
+            name = f"attempt_sr_task_{self.rng.randint(100, 999)}"
+            return TaskSpec(
+                name=name,
+                difficulty=max_level + 1,
+                baseline=0.2,
+                domain="self_referential",
+            )
+        else:
+            # Target current level's unsolved tasks
+            domain = f"level{current_level}"
+            name = f"master_level{current_level}_{self.rng.randint(100, 999)}"
+            return TaskSpec(
+                name=name,
+                difficulty=current_level + 2,
+                baseline=0.3,
+                domain=domain,
+            )
+
+    def on_level_skill_registered(self, skill_id: str, from_level: int) -> Optional[TaskSpec]:
+        """Generate follow-up goal when a skill is registered from Level N.
+
+        Returns goal encouraging Level N+1 attempt, or None if at max.
+        """
+        next_level = from_level + 1
+        if next_level > 5:  # 5 = SR level
+            return None
+        domain = f"level{next_level}" if next_level <= 4 else "self_referential"
+        name = f"skill_followup_level{next_level}_{skill_id[:8]}_{self.rng.randint(100, 999)}"
+        return TaskSpec(
+            name=name,
+            difficulty=next_level + 2,
+            baseline=0.25,
+            domain=domain,
+        )
+
     def _get_weights(self) -> Tuple[float, float, float]:
         """Return (frontier, gap, creative) weights based on current state.
 
