@@ -12,6 +12,13 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
+try:
+    from cognitive_core_engine.core.hdc import HyperVector
+    _HDC_AVAILABLE = True
+except ImportError:
+    _HDC_AVAILABLE = False
+    HyperVector = None  # type: ignore
+
 # --- Named constants (Rule 6) ---
 
 # Promotion thresholds (calibrated for env rewards ~0.02-0.15)
@@ -431,6 +438,66 @@ class ConceptGraph:
         Fallback: returns empty list.
         """
         return list(self._nodes.values())
+
+    def get_vector(self, domain: str) -> Optional[Any]:
+        """Generate HDC vector encoding a domain's concept structure.
+
+        Why: enables HDC-based transfer similarity (BN-04) to use real
+        concept structure rather than falling back to SequenceMatcher.
+
+        Encodes: for each concept node whose success_contexts contain
+        the domain, create a seed vector from name+level+usage, permute
+        by level*10+index, then bundle all vectors.
+
+        Returns None if no concepts match the domain or HDC not available.
+        """
+        if not _HDC_AVAILABLE or HyperVector is None:
+            return None
+
+        matching_nodes: List[Any] = []
+        for node in self._nodes.values():
+            domains_in_ctx = set()
+            for ctx in node.success_contexts:
+                if isinstance(ctx, dict):
+                    d = ctx.get("domain", "")
+                    if d:
+                        domains_in_ctx.add(d)
+            if domain in domains_in_ctx:
+                matching_nodes.append(node)
+
+        if not matching_nodes:
+            return None
+
+        vectors = []
+        for idx, node in enumerate(matching_nodes):
+            # Encode concept properties into the seed string
+            seed_str = f"{node.name}:L{node.level}:usage{node.usage_count}:r{node.avg_reward:.3f}"
+            vec = HyperVector.from_seed(seed_str)
+            # Permute by level * 10 + index to encode structural position
+            shift = node.level * 10 + idx
+            vec = vec.permute(shift)
+            vectors.append(vec)
+
+        if len(vectors) == 1:
+            return vectors[0]
+        return HyperVector.bundle(vectors)
+
+    def remove_concept(self, concept_id: str) -> bool:
+        """Remove a concept node by ID.
+
+        Why: supports TransferEngine rollback — concepts created during
+        a failed transfer need to be cleaned up.
+
+        Returns True if the concept was found and removed, False otherwise.
+        """
+        if concept_id in self._nodes:
+            del self._nodes[concept_id]
+            # Clean up co-occurrence references
+            for key in list(self._co_occurrences.keys()):
+                if concept_id in key:
+                    del self._co_occurrences[key]
+            return True
+        return False
 
     def size(self) -> int:
         """Return total concept count.
