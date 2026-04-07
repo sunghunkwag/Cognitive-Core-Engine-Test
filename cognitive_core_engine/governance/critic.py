@@ -1,3 +1,15 @@
+"""
+Governance Critic — evaluates candidate proposals before admission.
+
+Security note (BN-05):
+  The original implementation fell back to a SHA-256-derived pseudo-score
+  when holdout_rate was absent.  This allowed proposals with NO empirical
+  metrics to pass governance purely by chance of their serialised hash.
+  Fix: score defaults to 0.0 when holdout_rate is None.  hash_score is
+  kept in score_components for logging/debugging only and NEVER influences
+  the verdict.
+"""
+
 from __future__ import annotations
 
 import collections
@@ -12,6 +24,15 @@ def critic_evaluate_candidate_packet(
     packet: Dict[str, Any],
     invariants: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    """Evaluate a governance proposal packet and return a verdict.
+
+    BN-05 security fix: when holdout_rate is absent, score is set to 0.0
+    rather than using a SHA-256 hash as a pseudo-score.  The hash_score is
+    retained in score_components for diagnostics but MUST NOT influence the
+    verdict.  The 'used_hash_fallback' field is set to True whenever the
+    original code would have used the hash fallback, so callers can detect
+    and log this situation.
+    """
     def _coerce_float(value: Any) -> Optional[float]:
         try:
             return float(value)
@@ -28,8 +49,10 @@ def critic_evaluate_candidate_packet(
     meta_update = payload.get("meta_update", {})
     evidence = proposal.get("evidence", {}) if isinstance(proposal, dict) else {}
 
+    # Compute hash_score for diagnostics ONLY — never used in scoring.
     serialized = json.dumps(candidate, sort_keys=True, default=str)
     hash_score = (int(sha256(serialized)[:8], 16) % 100) / 100.0
+
     min_score = float(evaluation_rules.get("min_score", 0.4))
 
     metrics = candidate.get("metrics", {}) if isinstance(candidate, dict) else {}
@@ -51,13 +74,20 @@ def critic_evaluate_candidate_packet(
     gap_penalty = float(evaluation_rules.get("generalization_gap_penalty", 0.75))
     cost_penalty = float(evaluation_rules.get("discovery_cost_penalty", 0.08))
     gap = None
-    score = hash_score
+
+    # BN-05 FIX: when holdout_rate is absent, score = 0.0 (not hash_score).
+    # Proposals without real empirical metrics must not pass governance.
+    used_hash_fallback = holdout_rate is None
+    score = 0.0  # safe default — zero until proven by real metrics
+
     score_components = {
         "holdout_term": None,
         "gap_penalty": 0.0,
         "cost_penalty": 0.0,
+        # hash_score is logged here for diagnostics but NEVER added to score.
         "hash_score": hash_score,
     }
+
     if holdout_rate is not None:
         if train_rate is not None:
             gap = abs(train_rate - holdout_rate)
@@ -150,7 +180,8 @@ def critic_evaluate_candidate_packet(
     return {
         "verdict": verdict,
         "score": score,
-        "hash_score": hash_score,
+        "hash_score": hash_score,          # diagnostic only
+        "used_hash_fallback": used_hash_fallback,  # BN-05: caller alert flag
         "score_components": score_components,
         "approval_key": approval_key,
         "level": level,
