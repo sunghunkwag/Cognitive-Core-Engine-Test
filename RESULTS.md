@@ -1,6 +1,6 @@
 # AGI Evidence Report
 
-> Last updated: 2026-04-07 — reflects BN-01 ~ BN-07 bottleneck fixes.
+> Last updated: 2026-04-07 — reflects BN-01 ~ BN-09 bottleneck fixes.
 
 ## 0. Bottleneck Fix Summary
 
@@ -13,6 +13,8 @@
 | BN-05 | Governance critic: hash-fallback scoring path fully removed; holdout_rate mandatory | Anti-gaming hardening |
 | BN-06 | Adaptive meta-depth ceiling based on calibration error history (depth 1–4) | Rollout reliability |
 | BN-07 | Wire real ARC + HumanEval solvers to ExternalBenchmarkHarness | External benchmark scores > 0 |
+| BN-08 | Recursive emergent self-improvement loop (CausalChainTracker, EnvironmentCoupledFitness, skill→goal feedback) | Closed-loop RSI infrastructure |
+| BN-09 | Complete recursive loop plumbing (env fitness wiring, reward feedback, governance flow) | Fluid flows through pipes |
 
 ---
 
@@ -130,7 +132,43 @@ Before BN-07, both benchmarks scored 0.000 because no solver was connected. The 
 
 ---
 
-## 9. Ablation Comparison (A10)
+## 9. Recursive Emergence Evidence (BN-08 + BN-09)
+
+### Infrastructure
+
+| Component | Status | Description |
+|-----------|--------|-------------|
+| CausalChainTracker | ✅ Operational | Records skill→goal→achievement chains with temporal verification |
+| EnvironmentCoupledFitness | ✅ Wired | Dynamic tasks from live env state fed to OmegaForge (20+ gen) |
+| Skill→Goal feedback | ✅ Connected | `GoalGenerator.on_skill_registered()` creates skill-derived goals |
+| Agent RSI consultation | ✅ Active | Agents consult VM skills with 30% override, log actual reward |
+| L0 governance relaxation | ✅ Applied | Critic relaxes thresholds per-evaluation for L0 proposals only |
+
+### Emergence Metrics
+
+| Metric | Formula | Notes |
+|--------|---------|-------|
+| Tool Genesis Rate | `skills_improved_reward / total_rounds` | E9: denominator is total rounds |
+| Capability Horizon | `skill_derived_domains - initial - NOVEL_DOMAINS` | E10: excludes hardcoded domains |
+| Recursive Depth | `CausalChainTracker.max_chain_depth()` | Depth ≥ 2 = genuine recursion |
+
+### Anti-Cheat Verification
+
+- E1: Tasks differ across consecutive `update_tasks()` calls (≥ 3 per call)
+- E3: Quarantine rejects constant-output genomes (< 2 distinct values)
+- E4: `skill_performance_log` is append-only after first entry
+- E5/E6: Skill-derived goal names unique, no clash with hardcoded tasks
+- E7: Chain verification validates temporal causality and referential integrity
+- E8: CausalChainTracker starts empty (no preseeded events)
+- F1-F8: Flow tests verify env_fitness wiring, real metrics, L0 priority, goal persistence
+
+### Honest Assessment
+
+Recursive emergence (depth ≥ 2) is **stochastic** and depends on OmegaForge producing structurally valid programs that survive quarantine. In short runs (50 rounds), skill births are rare because `StrictStructuralDetector` requirements are demanding. The infrastructure is verified to be correctly wired end-to-end, but deep causal chains (depth 3+) require longer runs or relaxed detector constraints.
+
+---
+
+## 10. Ablation Comparison (A10)
 
 | Configuration | Final Composite | Mean Reward (last 10) | Concept Depth | Domains |
 |--------------|----------------|----------------------|---------------|---------|
@@ -152,11 +190,14 @@ Before BN-07, both benchmarks scored 0.000 because no solver was connected. The 
 - HDC retrieval precision validated against domain-specific benchmark
 - SelfModel correctly reports low confidence on novel unseen tasks
 - External benchmark harness correctly wired with real solvers (BN-07)
+- Recursive self-improvement loop infrastructure is fully connected (BN-08/09)
+- CausalChainTracker verifies temporal causality of emergence chains
 
 ## What This Does NOT Prove
 
 - These results do not demonstrate general intelligence
 - External benchmark scores of 1.000 reflect simple bundled tasks, not full ARC-AGI or HumanEval benchmarks
+- Recursive emergence (BN-08/09) is infrastructure — deep causal chains are stochastic and rare in short runs
 - The system operates in a simplified simulation environment
 - Internal AGI axis scores may overestimate true capability (A4 caveat)
 - ConceptGraph depth is partially driven by threshold calibration

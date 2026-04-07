@@ -13,19 +13,20 @@ cognitive_core_engine/
     hdc.py                    HyperVector (10,000-bit HDC)
     memory.py                 MemoryItem, SharedMemory
     tools.py                  ToolRegistry, tool factories
-    skills.py                 SkillStep, Skill, SkillLibrary
+    skills.py                 SkillStep, Skill, SkillLibrary (vm_skills, perf log)
     world_model.py            TransitionSummary, WorldModel (TD learning)
     planner.py                PlanCandidate, Planner (beam search)
     project_graph.py          ProjectNode, ProjectGraph
     environment.py            RuleProposal, TaskSpec, ResearchEnvironment
-    agent.py                  AgentConfig, Agent (B-type architecture)
-    orchestrator.py           OrchestratorConfig, Orchestrator (C-layer)
+    causal_chain.py           CausalChainTracker, CausalEvent (BN-08)
+    agent.py                  AgentConfig, Agent (B-type + RSI skill consultation)
+    orchestrator.py           OrchestratorConfig, Orchestrator (C-layer + emergence loop)
   omega_forge/              # Invention plugin (invoked on stagnation)
     instructions.py           OPS, Instruction, ProgramGenome, ExecutionState
     cfg.py                    ControlFlowGraph
     vm.py                     VirtualMachine, MacroLibrary
     concepts.py               Concept, ConceptLibrary, rand_inst
-    benchmark.py              TaskBenchmark, DetectorParams, StrictStructuralDetector
+    benchmark.py              TaskBenchmark, EnvironmentCoupledFitness, StrictStructuralDetector
     evidence.py               EvidenceWriter, EngineConfig
     engine.py                 OmegaForgeV13
     stage1.py                 Stage1Engine, TaskBenchmarkV4, ConceptDiscoveryBenchmark
@@ -45,7 +46,7 @@ cognitive_core_engine/
     cli.py                    build_parser, cmd_* functions, main()
 agi_modules/                # Capability extension modules
   competence_map.py           Zone-of-proximal-development tracking
-  goal_generator.py           Autonomous goal creation (frontier/gap/creative)
+  goal_generator.py           Autonomous goal creation (frontier/gap/creative/skill-derived)
   intrinsic_motivation.py     Curiosity, novelty, learning progress rewards
   concept_graph.py            Hierarchical abstraction (L0-L5)
   hierarchical_planner.py     Multi-level planning via concept graph
@@ -54,7 +55,7 @@ agi_modules/                # Capability extension modules
   self_referential_model.py   Advanced self-referential meta-simulation
   difficulty_scheduler.py     Curriculum learning with chaos injection
   self_improvement.py         Empirical env-rollout parameter tuning
-  agi_tracker.py              5-axis capability proxy scoring
+  agi_tracker.py              5-axis capability proxy + 3 emergence metrics (BN-08)
   external_benchmark.py       ARC-AGI + HumanEval held-out validation (BN-03)
   arc_solver.py               Rule-based ARC-AGI grid solver (BN-07)
   humaneval_solver.py          Template-matching HumanEval solver (BN-07)
@@ -66,6 +67,9 @@ tests/
   test_selftest.py            Core selftest + contract negative tests
   test_benchmarks.py          ADB, ARC, program synthesis benchmarks
   test_agi_integration.py     11 integration tests + anti-cheat audit
+  test_solvers.py             21 solver tests with anti-cheat checks (BN-07)
+  test_emergence.py           10 emergence mechanism tests (BN-08)
+  test_flow.py                10 recursive loop plumbing tests (BN-09)
 scripts/
   run_results.py              Reproduce baseline evidence logs
   run_agi_evidence.py         50-round evidence with 3-way ablation
@@ -77,7 +81,7 @@ main.py                     # Entry point
 
 ### Core Call Chain
 
-`Orchestrator -> Omega (on stagnation) -> Governance (critic) -> RSISkillRegistrar -> SkillLibrary`
+`Orchestrator -> Omega (on stagnation) -> Governance (critic) -> RSISkillRegistrar -> SkillLibrary -> Agent -> Reward -> GoalGenerator -> Omega (recursive loop)`
 
 ### Self-Referential Meta-Simulation Loop
 
@@ -111,8 +115,23 @@ Orchestrator.run_recursive_cycle()
   |-- TransferEngine.transfer()          [HDC structural similarity — BN-04]
   |-- SelfImprovementEngine.introspect() [empirical parameter tuning]
   |-- DifficultyScheduler.schedule()     [curriculum adjustment]
-  |-- AGIProgressTracker.tick_round()    [5-axis proxy measurement]
-  `-- ExternalBenchmark.run_full_benchmark() [ARC-AGI + HumanEval — BN-03]
+  |-- AGIProgressTracker.tick_round()    [5+3 axis measurement — BN-08]
+  |-- ExternalBenchmark.run_full_benchmark() [ARC-AGI + HumanEval — BN-03/07]
+  `-- CausalChainTracker.record_*()      [recursive emergence tracking — BN-08]
+```
+
+### Recursive Self-Improvement Loop (BN-08 + BN-09)
+
+```
+OmegaForge (env-coupled fitness)
+  → StrictStructuralDetector → Governance critic (L0 threshold relaxation)
+    → RSISkillRegistrar (quarantine + non-trivial output check)
+      → SkillLibrary.register() + skill_birth event
+        → GoalGenerator.on_skill_registered() → skill-derived goals
+          → Agent.choose_action() consults RSI skills (30% override)
+            → env.step() → actual reward logged to skill_performance_log
+              → CausalChainTracker: skill→goal→achievement chain
+                → (loop) new stagnation → OmegaForge evolves again
 ```
 
 ## Technical Details
@@ -136,6 +155,13 @@ Orchestrator.run_recursive_cycle()
 **Transfer Engine** (BN-04): Replaced name-similarity heuristic with ConceptGraph HDC structural vector similarity. Cross-domain transfer now operates on 10,000-bit binding vectors rather than string edit distance.
 
 **External Benchmarks** (BN-03): `run_full_benchmark()` loads `data/arc_agi_sample.json` (20 tasks, ARC canonical format) and `data/humaneval_sample.json` (10 problems, OpenAI HumanEval format). Weighted combined score: ARC-AGI × 0.60 + HumanEval × 0.40. Replaces legacy trivial list-reversal ADB tasks.
+
+**Recursive Emergence** (BN-08): `CausalChainTracker` records skill→goal→achievement chains. `EnvironmentCoupledFitness` generates dynamic tasks from live environment state. RSI skills consulted by agents during action selection with actual `env.step()` reward feedback. Quarantine rejects constant-output genomes.
+
+**Emergence Metrics** (BN-08 + BN-09):
+- Tool Genesis Rate: evolved skills that improved reward / total rounds
+- Capability Horizon: skill-derived domains solvable (excludes initial + NOVEL_DOMAINS)
+- Recursive Depth: longest causal chain in CausalChainTracker
 
 **Capability Scoring** (geometric mean of 5 axes):
 - Generalization, Autonomy, Self-Improvement, Abstraction, Open-Endedness
@@ -166,7 +192,7 @@ python main.py benchmark --suite ADB_v1 --seed 0 --trials 20
 
 ## Evidence Summary
 
-50-round evidence run (seed=42, with anti-wireheading active, post BN-01~07 fixes):
+50-round evidence run (seed=42, with anti-wireheading active, post BN-01~09 fixes):
 
 | Configuration | Composite | Domains |
 |--------------|----------|---------|
@@ -187,7 +213,7 @@ python main.py benchmark --suite ADB_v1 --seed 0 --trials 20
 
 Self-improvement score reflects governance-gated scoring with mandatory holdout metrics (hash-fallback removed). See [RESULTS.md](RESULTS.md) for full report.
 
-## Bottleneck Fixes (BN-01 ~ BN-07)
+## Bottleneck Fixes (BN-01 ~ BN-09)
 
 | ID | Fix | Status |
 |----|-----|--------|
@@ -198,10 +224,13 @@ Self-improvement score reflects governance-gated scoring with mandatory holdout 
 | BN-05 | Governance hash-fallback removed | ✅ Complete |
 | BN-06 | Adaptive meta-depth ceiling (calibration-based) | ✅ Complete |
 | BN-07 | Wire real ARC + HumanEval solvers to benchmark harness | ✅ Complete |
+| BN-08 | Recursive emergent self-improvement loop (CausalChainTracker, EnvironmentCoupledFitness, skill→goal feedback) | ✅ Complete |
+| BN-09 | Complete recursive loop plumbing (env fitness wiring, reward feedback, governance flow, goal tracking) | ✅ Complete |
 
 ## Scope & Limitations
 
 - External benchmark scores of 1.000 reflect 20 simple bundled ARC tasks and 10 basic HumanEval problems — NOT the full public benchmarks
+- Recursive emergence (BN-08/09) is stochastic — skill births depend on OmegaForge evolution producing structurally valid programs, which is rare in short runs
 - Concept graph depth (5) partially driven by threshold calibration
 - Meta-rollout confidence decays with depth; predictions beyond 3 steps are low-confidence
 - All environments simulated; no real-world grounding
