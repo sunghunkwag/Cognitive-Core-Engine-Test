@@ -27,6 +27,8 @@ from agi_modules.self_improvement import SelfImprovementEngine
 from agi_modules.agi_tracker import AGIProgressTracker
 from agi_modules.external_benchmark import ExternalBenchmarkHarness
 from agi_modules.solver_bridge import create_solver_pair
+from cognitive_core_engine.core.causal_chain import CausalChainTracker
+from cognitive_core_engine.omega_forge.benchmark import EnvironmentCoupledFitness
 from agi_modules.self_referential_model import AdvancedSelfReferentialModel
 
 
@@ -129,6 +131,12 @@ class Orchestrator:
         self.agi_tracker = AGIProgressTracker()
         self.external_benchmark = ExternalBenchmarkHarness(seed=42)
         self._initial_domain_count = len(self.env.tasks)
+
+        # BN-08: Recursive emergence infrastructure
+        self.causal_tracker = CausalChainTracker()
+        self.env_fitness = EnvironmentCoupledFitness()
+        self._rsi_registrar: Optional[Any] = None
+        self.agi_tracker.set_initial_domains(set(t.name for t in self.env.tasks))
 
         self._init_agents()
 
@@ -446,6 +454,15 @@ class Orchestrator:
         tasks = [self.env.sample_task()]
         if self.cfg.agents > 4:
             tasks.append(self.env.sample_task())
+
+        # BN-08: Inject skill-derived goals with priority
+        skill_goals = self.goal_gen.get_skill_derived_goals()
+        for sg in skill_goals[:2]:  # inject up to 2 skill-derived goals
+            self.env.add_domain(sg.domain, sg.difficulty, sg.baseline)
+            tasks.append(TaskSpec(
+                name=sg.name, difficulty=sg.difficulty,
+                baseline=sg.baseline, domain=sg.domain))
+            self.agi_tracker.update_goals(self_generated=1, total=1)
 
         # Only attempt goal generation after warmup (competence map has data)
         # This preserves backward compatibility with existing tests
@@ -800,8 +817,10 @@ class Orchestrator:
             self.candidate_queue.append(l2_proposal)
 
         critic_results: List[Dict[str, Any]] = []
+        proposals_by_id: Dict[str, RuleProposal] = {}
         while self.candidate_queue:
             proposal = self.candidate_queue.pop(0)
+            proposals_by_id[proposal.proposal_id] = proposal
             verdict = self._critic_evaluate(proposal)
             adopted = self._adopt_proposal(proposal, verdict)
             critic_results.append(
@@ -813,8 +832,73 @@ class Orchestrator:
                 }
             )
 
+        # BN-08: RSI skill registration + causal chain tracking
+        skill_birth_events: List[Dict[str, Any]] = []
+        skill_derived_goals: List[Any] = []
+        if critic_results:
+            try:
+                from cognitive_core_engine.omega_forge.rsi_pipeline import RSISkillRegistrar
+                if self._rsi_registrar is None:
+                    self._rsi_registrar = RSISkillRegistrar(self.skills, self.mem)
+                rsi_results = self._rsi_registrar.process_critic_results(
+                    critic_results, proposals_by_id)
+                # Collect skill birth events
+                skill_birth_events = self._rsi_registrar.get_recent_birth_events()
+            except Exception:
+                pass
+
+        # BN-08: Update environment-coupled fitness
+        env_state = {
+            "recent_rewards": list(self._recent_rewards[-10:]),
+            "task_count": len(self.env.tasks),
+            "round_idx": round_idx,
+            "stagnation": stagnation,
+            "difficulty": round_out.get("results", [{}])[0].get("info", {}).get("difficulty", 3)
+                if round_out.get("results") else 3,
+        }
+        self.env_fitness.update_tasks(env_state)
+
+        # BN-08: Record skill births in causal chain and notify GoalGenerator
+        for birth_event in skill_birth_events:
+            event_id = self.causal_tracker.record_skill_birth(
+                skill_id=birth_event.get("skill_id", ""),
+                genome_fitness=birth_event.get("genome_fitness", 0.0),
+                round_idx=round_idx,
+            )
+            # Notify GoalGenerator to create skill-derived goals
+            new_goals = self.goal_gen.on_skill_registered(birth_event)
+            for goal in new_goals:
+                goal_event_id = self.causal_tracker.record_goal_from_skill(
+                    goal_name=goal.name,
+                    trigger_skill_id=birth_event.get("skill_id", ""),
+                    trigger_event_id=event_id,
+                    round_idx=round_idx,
+                )
+                skill_derived_goals.append(goal)
+
+        # BN-08: Check if skill-derived goals achieved positive reward
+        for result in round_out.get("results", []):
+            task_name = result.get("info", {}).get("task", "")
+            reward = result.get("reward", 0)
+            if task_name and reward > 0.1:
+                # Check if this was a skill-derived goal
+                for link_key, goal_name in self.goal_gen._skill_goal_links.items():
+                    if goal_name == task_name:
+                        self.causal_tracker.record_goal_achieved(
+                            goal_name=task_name,
+                            reward=reward,
+                            round_idx=round_idx,
+                            contributing_skill_ids=[link_key.split(":")[0]],
+                        )
+                        break
+
         # AGI tracker update
         self.agi_tracker.update_abstraction(self.concept_graph.depth())
+        # BN-08: Update emergence metrics
+        self.agi_tracker.update_emergence(
+            skill_births=len(skill_birth_events),
+            recursive_depth=self.causal_tracker.max_chain_depth(),
+        )
         # Domain counting is done in _assign_tasks via fingerprinting;
         # here we only track difficulty increases.
         self.agi_tracker.tick_round()
@@ -832,6 +916,11 @@ class Orchestrator:
                 "agi_composite": self.agi_tracker.composite_score(),
                 "drift": self.self_model.detect_architectural_drift(),
                 "anchor_alignment": self.self_model.get_objective_anchor_alignment(),
+                # BN-08: Emergence metrics
+                "emergence_depth": self.causal_tracker.max_chain_depth(),
+                "emergence_chains": len(self.causal_tracker.chains_of_depth(2)),
+                "total_skill_births": self.causal_tracker.skill_birth_count(),
+                "skill_derived_goals": self.causal_tracker.goal_created_count(),
             }
         )
         return round_out

@@ -258,6 +258,31 @@ class Agent:
                 if h % 5 < 2:
                     return best_curious_action
 
+        # BN-08: Consult RSI skills if available
+        vm_skills = self.skills.vm_skills()
+        if vm_skills and hasattr(obs, '__getitem__'):
+            try:
+                difficulty = int(obs.get("difficulty", 3))
+                budget = int(obs.get("budget", 12))
+                tq = float(obs.get("tq", 0.5))
+                kq = float(obs.get("kq", 0.3))
+                oq = float(obs.get("oq", 0.2))
+                skill_input = [tq, kq, oq, float(difficulty), float(budget)]
+                actions = self.action_space()
+                for sk in vm_skills[:3]:  # consult up to 3 skills
+                    if hasattr(sk, "fn") and callable(getattr(sk, "fn", None)):
+                        try:
+                            raw_output = sk.fn(skill_input)
+                            action_idx = int(abs(raw_output)) % len(actions)
+                            suggested = actions[action_idx]
+                            if suggested != draft_action and random.random() < 0.3:
+                                self.skills.log_skill_performance(sk.id, 0.0)  # updated later
+                                return suggested
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
         if random.random() > self.cfg.risk:
             return draft_action
         return random.choice(self.action_space())

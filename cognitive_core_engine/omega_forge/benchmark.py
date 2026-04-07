@@ -55,6 +55,130 @@ class TaskBenchmark:
         return passed / total
 
 
+class EnvironmentCoupledFitness:
+    """Evaluates genomes against dynamically generated environment-derived tasks.
+
+    BN-08 Phase 1: Tasks are generated FROM the current environment state rather
+    than being a static list.  This creates evolutionary pressure that co-evolves
+    with the research environment.
+
+    Anti-cheat E1: update_tasks() generates >= 3 tasks per call, tasks must
+    differ across consecutive calls.
+    Anti-cheat E2: fitness is evaluated AFTER VM execution, not callable during it.
+    """
+
+    def __init__(self) -> None:
+        self._tasks: List[Tuple[str, List[float], float]] = []
+        self._prev_task_hash: int = 0
+        self._update_count: int = 0
+        # Initialize with baseline tasks derived from default environment
+        self._generate_baseline_tasks()
+
+    def _generate_baseline_tasks(self) -> None:
+        """Create initial task set before any environment state is available."""
+        self._tasks = [
+            ("predict_reward_baseline", [0.5, 0.3, 0.2, 3.0, 12.0], 0.5),
+            ("action_selection_low", [0.1, 0.1, 0.1, 1.0, 8.0], 0.0),
+            ("action_selection_high", [0.9, 0.8, 0.7, 5.0, 20.0], 2.0),
+        ]
+
+    def update_tasks(self, env_state: Dict[str, Any]) -> None:
+        """Refresh tasks based on current environment state.
+
+        Generates at least 3 tasks from environment observations:
+        1. Predict-reward: given [task_quality, knowledge_quality, org_quality,
+           difficulty, budget], predict expected reward
+        2. Optimal-action: given past rewards, predict best action index
+        3. Difficulty-scaling: predict performance at scaled difficulty
+
+        Anti-cheat E1: tasks must differ across consecutive calls.
+        """
+        self._update_count += 1
+        new_tasks: List[Tuple[str, List[float], float]] = []
+
+        # Extract environment features
+        recent_rewards = env_state.get("recent_rewards", [0.3, 0.2, 0.4])
+        mean_reward = sum(recent_rewards) / max(1, len(recent_rewards))
+        task_count = float(env_state.get("task_count", 6))
+        round_idx = float(env_state.get("round_idx", 0))
+        stagnation = 1.0 if env_state.get("stagnation", False) else 0.0
+
+        # Task 1: Predict mean reward from environment features
+        features_1 = [mean_reward, task_count / 50.0, round_idx / 100.0, stagnation, float(self._update_count) / 20.0]
+        expected_1 = mean_reward * (1.0 + 0.05 * min(round_idx, 50))
+        new_tasks.append((f"predict_reward_r{int(round_idx)}", features_1, expected_1))
+
+        # Task 2: Identify best action index from reward history
+        if len(recent_rewards) >= 3:
+            last_3 = recent_rewards[-3:]
+        else:
+            last_3 = recent_rewards + [0.0] * (3 - len(recent_rewards))
+        features_2 = last_3 + [round_idx / 100.0, stagnation]
+        best_idx = float(last_3.index(max(last_3)))
+        new_tasks.append((f"action_select_r{int(round_idx)}", features_2, best_idx))
+
+        # Task 3: Predict performance at scaled difficulty
+        difficulty = float(env_state.get("difficulty", 3))
+        features_3 = [mean_reward, difficulty / 10.0, task_count / 50.0, stagnation, round_idx / 100.0]
+        expected_3 = max(0.0, mean_reward * (1.0 - difficulty / 20.0))
+        new_tasks.append((f"difficulty_scale_r{int(round_idx)}", features_3, expected_3))
+
+        # Task 4: Trend prediction (if enough history)
+        if len(recent_rewards) >= 4:
+            trend = recent_rewards[-1] - recent_rewards[-4]
+            features_4 = recent_rewards[-4:] + [round_idx / 100.0]
+            new_tasks.append((f"trend_predict_r{int(round_idx)}", features_4, trend))
+
+        # Anti-cheat E1: verify tasks differ from previous set
+        new_hash = hash(str([(t[0], tuple(t[1]), t[2]) for t in new_tasks]))
+        if new_hash != self._prev_task_hash:
+            self._tasks = new_tasks
+            self._prev_task_hash = new_hash
+        else:
+            # Force at least one task change by incorporating update_count
+            features_extra = [float(self._update_count), mean_reward, stagnation, round_idx / 50.0, task_count / 25.0]
+            new_tasks.append((f"forced_change_r{self._update_count}", features_extra, float(self._update_count % 5)))
+            self._tasks = new_tasks
+            self._prev_task_hash = hash(str([(t[0], tuple(t[1]), t[2]) for t in new_tasks]))
+
+    def evaluate(self, genome: "ProgramGenome", vm: "VirtualMachine") -> float:
+        """Evaluate genome against environment-coupled tasks.
+
+        Anti-cheat E2: this runs AFTER VM execution, not during.
+        Returns 0.0-1.0 based on task pass rate.
+        """
+        if not self._tasks:
+            return 0.0
+
+        passed = 0.0
+        total = len(self._tasks)
+
+        for name, inputs, expected in self._tasks:
+            try:
+                st = vm.execute(genome, inputs)
+                result = st.regs[0]
+                # Check result with tolerance
+                if abs(result - expected) < 0.01:
+                    passed += 1.0
+                elif expected != 0 and abs(result - expected) < abs(expected) * 0.15:
+                    passed += 0.5
+                elif abs(result - expected) < 1.0:
+                    passed += 0.25
+            except Exception:
+                pass
+
+        return passed / max(1, total)
+
+    @property
+    def task_names(self) -> List[str]:
+        """Return current task names (for capability labeling)."""
+        return [t[0] for t in self._tasks]
+
+    @property
+    def task_count(self) -> int:
+        return len(self._tasks)
+
+
 # ==============================================================================
 # 6) Detector + evidence writer
 # ==============================================================================

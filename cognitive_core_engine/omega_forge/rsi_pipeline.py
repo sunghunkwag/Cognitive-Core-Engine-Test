@@ -98,11 +98,16 @@ def _compile_genome(candidate: Dict[str, Any]) -> Optional[ProgramGenome]:
 # ---------------------------------------------------------------------------
 
 def _quarantine_genome(genome: ProgramGenome) -> QuarantineReport:
-    """Execute genome against standard inputs; check for clean halts."""
+    """Execute genome against standard inputs; check for clean halts.
+
+    Anti-cheat E3: rejects constant-output skills (must produce at least
+    2 distinct reg0 values across the 5 quarantine inputs).
+    """
     vm = VirtualMachine(max_steps=_SMOKE_TEST_MAX_STEPS)
     clean_halts = 0
     errors: List[str] = []
     notes: List[str] = []
+    outputs: List[float] = []
 
     for inp in _QUARANTINE_INPUTS:
         t0 = time.monotonic()
@@ -118,10 +123,18 @@ def _quarantine_genome(genome: ProgramGenome) -> QuarantineReport:
 
         if state.halted_cleanly:
             clean_halts += 1
+            outputs.append(float(state.regs[0]))
         elif state.error:
             errors.append(f"VM error '{state.error}' on input {inp}")
         else:
             notes.append(f"did not halt cleanly on input {inp}")
+
+    # Anti-cheat E3: reject constant-output skills
+    distinct_outputs = len(set(round(o, 6) for o in outputs))
+    if distinct_outputs < 2 and len(outputs) >= 2:
+        notes.append(f"constant output rejected ({distinct_outputs} distinct values)")
+        return QuarantineReport(passed=False, clean_halts=clean_halts,
+                                errors=errors, notes=notes)
 
     passed = clean_halts >= _MIN_CLEAN_HALTS
     return QuarantineReport(passed=passed, clean_halts=clean_halts,
@@ -168,6 +181,14 @@ class RSISkillRegistrar:
         self._skills = skill_library
         self._memory = memory
         self._registered_gids: set = set()
+        self._last_birth_event: Optional[Dict[str, Any]] = None
+        self._all_birth_events: List[Dict[str, Any]] = []
+
+    def get_recent_birth_events(self) -> List[Dict[str, Any]]:
+        """Return and clear recent skill birth events for causal chain wiring."""
+        events = list(self._all_birth_events)
+        self._all_birth_events.clear()
+        return events
 
     def process_critic_results(
         self,
@@ -270,6 +291,42 @@ class RSISkillRegistrar:
                 "quarantine_clean_halts": qr.clean_halts,
             },
             tags=["rsi", "skill_registration"],
+        )
+
+        # BN-08: Emit skill birth event for causal chain tracking
+        capabilities = []
+        try:
+            # Determine capabilities by testing against task names
+            callable_test_inputs = [[1.0, 2.0, 3.0], [0.5, 0.3, 0.2, 3.0, 12.0]]
+            for test_inp in callable_test_inputs:
+                try:
+                    callable_fn(test_inp)
+                    capabilities.append("compute")
+                    break
+                except Exception:
+                    pass
+            if metrics.get("train_pass_rate", 0) > 0.3:
+                capabilities.append("predict_reward")
+            if metrics.get("holdout_pass_rate", 0) > 0.25:
+                capabilities.append("optimize_action")
+        except Exception:
+            capabilities = ["general"]
+
+        birth_event = {
+            "event": "new_skill_registered",
+            "skill_id": skill_id,
+            "capabilities": capabilities if capabilities else ["general"],
+            "genome_fitness": float(metrics.get("train_pass_rate", 0)),
+            "generation": candidate.get("generation", 0),
+        }
+        self._last_birth_event = birth_event
+        self._all_birth_events.append(birth_event)
+        # Store birth event in SharedMemory
+        self._memory.add(
+            "artifact",
+            f"skill_birth:{skill_id}",
+            birth_event,
+            tags=["skill_birth", "rsi"],
         )
 
         return RSIRegistrationResult(
