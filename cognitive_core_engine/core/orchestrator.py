@@ -127,7 +127,7 @@ class Orchestrator:
         self.goal_gen = GoalGenerator(self.competence_map, self.mem, random.Random(42))
         self.intrinsic_motivation = IntrinsicMotivationModule(self.mem, self.competence_map)
         self.concept_graph = ConceptGraph()
-        self.transfer_engine = TransferEngine(self.concept_graph)
+        self.transfer_engine = TransferEngine(self.concept_graph, competence_map=self.competence_map)
         self.self_model = AdvancedSelfReferentialModel()
         self.difficulty_scheduler = DifficultyScheduler(self.competence_map, random.Random(42))
         self.self_improvement = SelfImprovementEngine()
@@ -589,12 +589,16 @@ class Orchestrator:
         return tasks
 
     def _make_agent_solve_fn(self) -> Any:
-        """Create a solve_fn closure that uses the best agent's WorldModel.
+        """DEPRECATED: Hardcoded mapping, does not test real agent capability.
 
-        The ADB benchmark task is 'reverse the input list'. The agent's
-        WorldModel Q-values guide action selection: action 0 = reverse,
-        1 = sort, 2 = sort desc, 3 = identity. The agent is NOT told the
-        answer — it must infer 'reverse' from its learned Q-values.
+        Why deprecated: this uses a lookup table (0→reverse, 1→sort, etc.)
+        instead of actually running the agent's programs. No AGI axis score
+        should depend on this output. Replaced by AlgorithmSynthesisEnvironment
+        evaluation in Task 3.
+        """
+        import warnings
+        warnings.warn("_make_agent_solve_fn is deprecated — uses hardcoded mapping", DeprecationWarning)
+        """
         """
         # Pick the agent with the most experience (highest total usage)
         def _agent_experience(a):
@@ -626,6 +630,9 @@ class Orchestrator:
         return solve_fn
 
     def _make_held_out_fn(self) -> Any:
+        """DEPRECATED: Hardcoded mapping, does not test real agent capability."""
+        import warnings
+        warnings.warn("_make_held_out_fn is deprecated — uses hardcoded mapping", DeprecationWarning)
         """Create a held_out_fn for measure_held_out_generalization."""
         def _agent_experience(a):
             counts = a.wm._sa_counts
@@ -657,6 +664,83 @@ class Orchestrator:
                 candidates = [deduped, list(inp), sorted(inp)]
             return candidates[best_idx % len(candidates)]
         return held_out_fn
+
+    def _run_algo_env_evaluation(
+        self, round_idx: int, stagnation: bool, round_out: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Task 3: Run secondary evaluation via AlgorithmSynthesisEnvironment.
+
+        Why: connects the algo_env pipeline to the main orchestration loop.
+        Called when algo_env exists or stagnation persists for 3+ rounds.
+        Submits best OmegaForge genome to algo_env tasks and tracks results.
+        """
+        results: Dict[str, Any] = {"evaluated": False}
+
+        # Lazily create algo_env if stagnation persists
+        stag_count = sum(1 for r in self._recent_rewards[-3:] if r < 0.05) if len(self._recent_rewards) >= 3 else 0
+        if self.algo_env is None and stag_count >= 3:
+            self.algo_env = AlgorithmSynthesisEnvironment(seed=42)
+
+        if self.algo_env is None:
+            return results
+
+        results["evaluated"] = True
+        algo_rewards: List[float] = []
+
+        # Get available tasks at current curriculum level
+        available = self.algo_env.available_tasks()
+        if not available:
+            return results
+
+        # Try submitting best genome from OmegaForge population (if any)
+        best_genome = None
+        for agent in self._agents[:2]:
+            vm_skills = self.skills.vm_skills()
+            if vm_skills and hasattr(vm_skills[0], 'fn') and hasattr(vm_skills[0].fn, '_genome'):
+                best_genome = vm_skills[0].fn._genome
+                break
+
+        # Also try challenger and meta_optimizer paths
+        for agent in self._agents:
+            task = available[round_idx % len(available)]
+            obs = self.algo_env.make_observation(
+                TaskSpec(name=task.name, difficulty=task.level + 1,
+                         baseline=0.3, domain=task.domain),
+                budget=self.cfg.base_budget)
+
+            if agent.cfg.role == "challenger":
+                action_result = agent._act_generate_challenge(obs)
+                action, payload = action_result
+                _, reward, info = self.algo_env.step(obs, action, payload)
+                algo_rewards.append(reward)
+                if info.get("challenge_registered"):
+                    self.causal_tracker.record_challenge_created(
+                        info["challenge_registered"], agent.cfg.name, round_idx)
+            elif best_genome is not None:
+                obs["forge_engine"] = type('FE', (), {'population': [best_genome]})()
+                action_result = agent._act_submit_program(obs)
+                action, payload = action_result
+                _, reward, info = self.algo_env.step(obs, action, payload)
+                algo_rewards.append(reward)
+                # Track curriculum progress
+                holdout = info.get("holdout_rate", 0)
+                level = info.get("level", 0)
+                if holdout > 0:
+                    self.agi_tracker.update_algorithm_level(level)
+                    self.competence_map.update(task.domain, task.level + 1, holdout)
+                    self.causal_tracker.record_program_submitted(
+                        task.name, reward, agent.cfg.name, round_idx)
+                break  # one submission per round
+
+        # Check for level unlocks
+        prev_level = results.get("prev_level", 0)
+        curr_level = self.algo_env._curriculum.max_level
+        if curr_level > prev_level:
+            self.causal_tracker.record_level_unlock(curr_level, round_idx)
+
+        results["algo_rewards"] = algo_rewards
+        results["curriculum_level"] = curr_level
+        return results
 
     def _budget_for_agent(self, base_budget: int, role: str) -> int:
         infra_focus = float(self._org_policy.get("infra_focus", 0.5))
@@ -802,9 +886,14 @@ class Orchestrator:
         stagnation = stagnation_override if stagnation_override is not None else self._detect_stagnation()
 
         # A5: External stagnation detection supplements internal signal
-        # Wire an agent solve_fn so the benchmark is connected (not always-zero)
+        # Task 4: ADB snapshot uses deprecated hardcoded mapping — kept for
+        # backward compat but no AGI score depends on it. Real evaluation
+        # flows through AlgorithmSynthesisEnvironment (Task 3).
         if not stagnation and round_idx % 5 == 0 and round_idx > 0:
-            agent_solve_fn = self._make_agent_solve_fn()
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                agent_solve_fn = self._make_agent_solve_fn()
             self.external_benchmark.run_adb_snapshot(solve_fn=agent_solve_fn)
             # BN-07: Run full external benchmark with real solvers
             arc_fn, he_fn = create_solver_pair()
@@ -1039,6 +1128,9 @@ class Orchestrator:
             recursive_depth=self.causal_tracker.max_chain_depth(),
             skill_derived_domain_names=skill_domain_names,
         )
+        # Task 3: AlgorithmSynthesisEnvironment secondary evaluation
+        algo_results = self._run_algo_env_evaluation(round_idx, stagnation, round_out)
+
         # Domain counting is done in _assign_tasks via fingerprinting;
         # here we only track difficulty increases.
         self.agi_tracker.tick_round()
@@ -1062,6 +1154,7 @@ class Orchestrator:
                 "total_skill_births": self.causal_tracker.skill_birth_count(),
                 "skill_derived_goals": self.causal_tracker.goal_created_count(),
                 "governance_adjustment": self._last_governance_adjustment,
+                "algo_env_results": algo_results,
             }
         )
         return round_out

@@ -58,6 +58,10 @@
 - Transfer attempts: 10
 - TransferEngine now computes cosine similarity on 10,000-bit ConceptGraph binding vectors
 - Name-collision artifacts eliminated; cross-domain transfer governed by structural overlap
+- **A+ Task 1**: measure_transfer_success() returns REAL competence delta (was stub 0.05)
+- **A+ Task 1**: rollback_transfer() removes transferred concepts and restores competence
+- **A+ Task 2**: ConceptGraph.get_vector() generates HDC vectors from actual concept nodes
+  (was missing — HDC path now activates instead of SequenceMatcher fallback)
 
 ---
 
@@ -269,6 +273,36 @@ New causal chain event types: `level_unlocked`, `challenge_created`, `sr_task_at
 
 Level-aware goal generation integrates curriculum progression with GoalGenerator.
 AGI tracker reports `capability_horizon` (max level / 4.0) and `sr_success_rate`.
+
+## 12. A+ Upgrade Evidence
+
+### Task 1-2: TransferEngine + ConceptGraph fully implemented
+- measure_transfer_success() returns real CompetenceMap deltas (not stub 0.05)
+- rollback_transfer() removes concepts and restores competence state (not no-op)
+- ConceptGraph.get_vector() generates HDC vectors from actual concept nodes
+- HyperVector.cosine_similarity() enables HDC transfer path activation
+
+### Task 3: AlgorithmSynthesisEnvironment integrated into run_recursive_cycle
+- algo_env.step() called via _run_algo_env_evaluation() every cycle
+- Holdout rates flow to agi_tracker.update_algorithm_level()
+- Level unlocks recorded in CausalChainTracker
+
+### Task 4: Hardcoded solve_fn mappings deprecated
+- _make_agent_solve_fn() and _make_held_out_fn() emit DeprecationWarning
+- No AGI axis score depends on their output
+- ADB benchmark path separated from algo_env evaluation
+
+### Task 5: Multi-seed evidence (run `scripts/run_multi_seed_evidence.py`)
+- 20 seeds × 30 rounds, independent per seed
+- Reports: composite_score, skill_births, max_chain_depth, domains_discovered
+
+### Task 6: L0 evidence (run `scripts/run_algo_evidence.py`)
+- 5 seeds × 50 generations, top-5 genomes evaluated on L0 holdout
+- Honestly reports if L0 solving rate is 0% with explanation
+
+### Task 7: Causal chain dump (run `scripts/dump_causal_chains.py`)
+- seed=12345, 30 rounds, full chain dump with verify_chain() on every chain
+- Reports depth distribution and verification pass rate
 
 ---
 Seed: 42 | Rounds: 50 | Time: 29.5s | Branch: claude/wire-solvers-benchmarks-YoewQ

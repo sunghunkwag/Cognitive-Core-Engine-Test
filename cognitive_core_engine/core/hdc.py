@@ -75,6 +75,16 @@ class HyperVector:
         dist = diff.bit_count()
         return 1.0 - (dist / self.DIM)
 
+    def cosine_similarity(self, other: HyperVector) -> float:
+        """Cosine-like similarity for binary vectors.
+
+        Why: TransferEngine._cosine_similarity calls this. For binary HDC
+        vectors, Hamming similarity is the analogous metric to cosine
+        similarity in continuous spaces. Maps to [-1, 1] range.
+        """
+        ham = self.similarity(other)
+        return 2.0 * ham - 1.0  # map [0,1] → [-1,1]
+
     @staticmethod
     def bundle(vectors: List[HyperVector]) -> HyperVector:
         """
