@@ -51,6 +51,7 @@ class AGIProgressTracker:
         self._skills_that_improved_reward: int = 0
         self._skill_derived_domains: int = 0
         self._initial_domains: set = set()
+        self._excluded_domains: set = set()  # BN-09 Fix 5: NOVEL_DOMAINS
         self._recursive_depth: int = 0
         self._skill_derived_domain_names: set = set()
 
@@ -137,6 +138,14 @@ class AGIProgressTracker:
         """Record the initial domain set for capability horizon calculation."""
         self._initial_domains = set(domains)
 
+    def set_excluded_domains(self, domains: set) -> None:
+        """Record domains to exclude from capability_horizon (e.g. NOVEL_DOMAINS).
+
+        BN-09 Fix 5: prevents creative-strategy domains from inflating
+        the capability horizon metric.
+        """
+        self._excluded_domains = set(domains)
+
     def update_emergence(
         self,
         skill_births: int = 0,
@@ -171,8 +180,9 @@ class AGIProgressTracker:
         """BN-08: count of solvable domains that didn't exist at round 0.
 
         Anti-cheat E10: excludes initial domains AND NOVEL_DOMAINS.
+        BN-09 Fix 5: also excludes _excluded_domains (NOVEL_DOMAINS).
         """
-        return len(self._skill_derived_domain_names - self._initial_domains)
+        return len(self._skill_derived_domain_names - self._initial_domains - self._excluded_domains)
 
     def emergence_depth(self) -> int:
         """BN-08: longest causal chain depth."""

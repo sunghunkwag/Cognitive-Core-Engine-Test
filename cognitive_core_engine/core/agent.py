@@ -143,6 +143,10 @@ class Agent:
         # BN-06: rolling transition log for calibration error
         self._transition_log: List[Dict[str, float]] = []
 
+        # BN-09 Fix 2: Track RSI skill consultation for reward feedback
+        self._last_consulted_rsi_skill_id: Optional[str] = None
+        self._rsi_skill_accepted: bool = False
+
     # ------------------------------------------------------------------
     # BN-06: transition log management
     # ------------------------------------------------------------------
@@ -258,7 +262,7 @@ class Agent:
                 if h % 5 < 2:
                     return best_curious_action
 
-        # BN-08: Consult RSI skills if available
+        # BN-08/09: Consult RSI skills if available
         vm_skills = self.skills.vm_skills()
         if vm_skills and hasattr(obs, '__getitem__'):
             try:
@@ -276,7 +280,9 @@ class Agent:
                             action_idx = int(abs(raw_output)) % len(actions)
                             suggested = actions[action_idx]
                             if suggested != draft_action and random.random() < 0.3:
-                                self.skills.log_skill_performance(sk.id, 0.0)  # updated later
+                                # BN-09 Fix 2: Store skill ID for reward feedback
+                                self._last_consulted_rsi_skill_id = sk.id
+                                self._rsi_skill_accepted = True
                                 return suggested
                         except Exception:
                             pass
@@ -347,6 +353,9 @@ class Agent:
         obs: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Execute one step: plan → act → update world model → log."""
+        # BN-09 Fix 2/F4: Reset RSI skill tracking at start of every step
+        self._last_consulted_rsi_skill_id = None
+        self._rsi_skill_accepted = False
         # Self-model: check if we should attempt this task
         self._skip_requested = False
         if self.self_model is not None:
@@ -409,6 +418,10 @@ class Agent:
         }
 
         next_obs, reward, info = env.step(obs, action, payload)
+
+        # BN-09 Fix 2: Log actual env.step() reward for consulted RSI skill
+        if self._last_consulted_rsi_skill_id is not None and self._rsi_skill_accepted:
+            self.skills.log_skill_performance(self._last_consulted_rsi_skill_id, reward)
 
         # BN-06: record transition before world model update
         self._record_transition(obs, action, reward)
@@ -484,4 +497,5 @@ class Agent:
             "agent": self.cfg.name, "role": self.cfg.role,
             "project_id": proj_node.id, "project_name": proj_node.name,
             "action": action, "reward": reward, "mem_id": mem_id, "info": info,
+            "rsi_skill_used": self._last_consulted_rsi_skill_id,
         }
