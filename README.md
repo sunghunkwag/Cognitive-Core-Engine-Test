@@ -76,6 +76,9 @@ scripts/
   run_results.py              Reproduce baseline evidence logs
   run_agi_evidence.py         50-round evidence with 3-way ablation
   verify_self_improvement.py  Self-improvement verification suite
+  run_multi_seed_evidence.py  20-seed statistical evidence (A+ Task 5)
+  run_algo_evidence.py        L0 task solve evidence (A+ Task 6)
+  dump_causal_chains.py       Causal chain dump (A+ Task 7)
 main.py                     # Entry point
 ```
 
@@ -254,11 +257,13 @@ Self-improvement score reflects governance-gated scoring with mandatory holdout 
 
 - External benchmark scores of 1.000 reflect 20 simple bundled ARC tasks and 10 basic HumanEval problems — NOT the full public benchmarks
 - Level 4 meta-programs are extremely unlikely to emerge in short runs — the curriculum gate requires solving Level 0-3 first
-- Recursive emergence (BN-08/09/10) is stochastic — skill births depend on OmegaForge evolution producing structurally valid programs
+- L0 algorithmic tasks (SUM/MAX/MIN/COUNT) remain unsolved by evolved VM programs in most seeds — the gap between random mutation search and exact holdout correctness (1e-6 tolerance) is substantial
+- Recursive emergence (BN-08/09/10) is stochastic — skill births depend on OmegaForge producing structurally valid, non-constant-output programs
 - Concept graph depth (5) partially driven by threshold calibration
-- Meta-rollout confidence decays with depth; predictions beyond 3 steps are low-confidence
 - All environments simulated; no real-world grounding
-- TransferEngine HDC similarity improves over name-heuristics but cross-domain analogy remains limited by ConceptGraph depth
+- ~~TransferEngine stubs~~ (FIXED: measure_transfer_success returns real deltas, rollback removes concepts)
+- ~~ConceptGraph.get_vector() missing~~ (FIXED: generates HDC vectors from actual concept nodes)
+- ~~Hardcoded solve_fn mappings~~ (FIXED: deprecated, separated from AGI scoring)
 
 ## License
 
