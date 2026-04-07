@@ -48,6 +48,8 @@ class ResearchEnvironment:
         self.global_tool_quality = 0.10
         self.global_kb_quality = 0.10
         self.global_org_quality = 0.10
+        # BN-10 Fix 1: domain reward tracking for adaptive difficulty
+        self._domain_reward_history: Dict[str, List[float]] = {}
 
     def sample_task(self) -> TaskSpec:
         return self.rng.choice(self.tasks)
@@ -109,10 +111,24 @@ class ResearchEnvironment:
             raw = 0.0
 
         noise = self.rng.uniform(-0.02, 0.02)
-        performance = max(0.0, min(1.0, base + raw + noise))
+
+        # BN-10 Fix 1: skill_bonus based on RSI skill output proximity to target
+        skill_bonus = 0.0
+        rsi_skill_output = payload.get("rsi_skill_output")
+        if rsi_skill_output is not None:
+            target = diff * 0.1 + base * 2.0
+            skill_bonus = max(0.0, 0.15 - abs(float(rsi_skill_output) - target) * 0.1)
+
+        performance = max(0.0, min(1.0, base + raw + skill_bonus + noise))
         delta = performance - base
         infra_bonus = 0.025 * (tq + kq + oq) / 3.0
         reward = delta + infra_bonus
+
+        # BN-10 Fix 1: Track domain rewards for adaptive difficulty
+        if domain not in self._domain_reward_history:
+            self._domain_reward_history[domain] = []
+        self._domain_reward_history[domain].append(reward)
+        self.adaptive_difficulty(domain)
 
         next_obs = dict(obs)
         next_obs["phase"] = "integrate"
@@ -123,8 +139,41 @@ class ResearchEnvironment:
             "tq": self.global_tool_quality,
             "kq": self.global_kb_quality,
             "oq": self.global_org_quality,
+            "skill_bonus": skill_bonus,
         }
         return next_obs, reward, info
+
+    def adaptive_difficulty(self, domain: str) -> None:
+        """BN-10 Fix 1: Increase difficulty when domain performance is consistently high."""
+        history = self._domain_reward_history.get(domain, [])
+        if len(history) < 5:
+            return
+        recent = history[-5:]
+        mean_reward = sum(recent) / len(recent)
+        if mean_reward > 0.08:
+            for task in self.tasks:
+                if task.domain == domain and task.difficulty < 10:
+                    task.difficulty = min(10, task.difficulty + 1)
+                    task.baseline = max(0.05, task.baseline * 0.90)
+                    # Reset history after adaptation
+                    self._domain_reward_history[domain] = []
+                    break
+
+    def get_state_vector(self) -> List[float]:
+        """BN-10 Fix 1: Return environment state as 8-element float vector."""
+        difficulties = [t.difficulty for t in self.tasks] if self.tasks else [0]
+        baselines = [t.baseline for t in self.tasks] if self.tasks else [0]
+        domains = set(t.domain for t in self.tasks)
+        return [
+            self.global_tool_quality,
+            self.global_kb_quality,
+            self.global_org_quality,
+            len(self.tasks) / 50.0,
+            sum(difficulties) / max(1, len(difficulties)) / 10.0,
+            sum(baselines) / max(1, len(baselines)),
+            len(domains) / 20.0,
+            max(difficulties) / 10.0,
+        ]
 
     def add_domain(self, name: str, difficulty: int, baseline: float) -> TaskSpec:
         """Dynamically add a new domain to the environment.

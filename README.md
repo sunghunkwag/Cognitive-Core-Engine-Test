@@ -226,6 +226,7 @@ Self-improvement score reflects governance-gated scoring with mandatory holdout 
 | BN-07 | Wire real ARC + HumanEval solvers to benchmark harness | ✅ Complete |
 | BN-08 | Recursive emergent self-improvement loop (CausalChainTracker, EnvironmentCoupledFitness, skill→goal feedback) | ✅ Complete |
 | BN-09 | Complete recursive loop plumbing (env fitness wiring, reward feedback, governance flow, goal tracking) | ✅ Complete |
+| BN-10 | Real recursive self-improvement (env alignment, detector relaxation, skill-env coupling, Stage1 strategies) | ✅ Complete |
 
 ## Scope & Limitations
 

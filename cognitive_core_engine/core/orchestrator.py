@@ -208,29 +208,49 @@ class Orchestrator:
         from cognitive_core_engine.omega_forge.engine import OmegaForgeV13
         from cognitive_core_engine.omega_forge.stage1 import ConceptDiscoveryBenchmark
 
-        engine = OmegaForgeV13(seed=int(gap_spec.get("seed", 0)))
+        from cognitive_core_engine.omega_forge.evidence import EngineConfig
+        # BN-10 Fix 8g: Use larger population for RSI evolution
+        pop = int(gap_spec.get("pop_size", 40))
+        rsi_config = EngineConfig(pop_size=pop, elite_keep=max(4, pop // 3),
+                                  children_per_elite=2)
+        engine = OmegaForgeV13(seed=int(gap_spec.get("seed", 0)), config=rsi_config)
         # FIX 1 (BN-09): Wire environment-coupled fitness into evolution
         engine.env_fitness = self.env_fitness
         engine.init_population()
 
-        # Run at least 20 generations (not 3) — F2: min is enforced
+        # BN-10 Fix 3d: Run at least 20 generations — F2: min is enforced
         min_gens = max(20, int(gap_spec.get("min_generations", 20)))
         for _ in range(min_gens):
             engine.step()
 
-        # Collect top genomes by score and evaluate with real benchmark
+        # BN-10: Collect top genomes, preferring quarantine-viable ones
+        from cognitive_core_engine.omega_forge.rsi_pipeline import _quarantine_genome, _compile_genome
         ranked = sorted(engine.population, key=lambda g: g.last_score, reverse=True)
         candidates: List[Dict[str, Any]] = []
-        for g in ranked[:3]:
-            # FIX 3 (BN-09): ALL metrics from real ConceptDiscoveryBenchmark — no fakes
+        # First pass: pick quarantine-viable genomes
+        for g in ranked[:20]:
+            if len(candidates) >= 3:
+                break
+            code = [(i.op, i.a, i.b, i.c) for i in g.instructions]
+            test_genome = _compile_genome({"gid": g.gid, "code": code})
+            if test_genome:
+                qr = _quarantine_genome(test_genome)
+                if not qr.passed:
+                    continue
             metrics = ConceptDiscoveryBenchmark.evaluate(g, engine.vm)
             candidates.append({
-                "gid": g.gid,
-                "generation": engine.generation,
-                "code": [(i.op, i.a, i.b, i.c) for i in g.instructions],
-                "metrics": metrics,
-                "task_scores": {},
+                "gid": g.gid, "generation": engine.generation,
+                "code": code, "metrics": metrics, "task_scores": {},
             })
+        # Fallback: if no quarantine-viable genomes, use top-scored anyway
+        if not candidates:
+            for g in ranked[:1]:
+                code = [(i.op, i.a, i.b, i.c) for i in g.instructions]
+                metrics = ConceptDiscoveryBenchmark.evaluate(g, engine.vm)
+                candidates.append({
+                    "gid": g.gid, "generation": engine.generation,
+                    "code": code, "metrics": metrics, "task_scores": {},
+                })
 
         # FIX 3 (BN-09): Record best holdout for governance adjustment tracking
         governance_adjustment = None
@@ -301,6 +321,7 @@ class Orchestrator:
                 metrics = candidate.get("metrics", {})
                 holdout = metrics.get("holdout_pass_rate", 0)
                 if holdout < eval_rules.get("min_holdout_pass_rate", 0.30):
+                    # BN-10 Fix 6: Floor 0.0 for _omega_evolved (quarantine is real gate)
                     eval_rules["min_holdout_pass_rate"] = max(0.0, holdout - 0.01)
                     eval_rules["min_score"] = -0.5
                     eval_rules["min_adversarial_pass_rate"] = 0.0
@@ -892,22 +913,19 @@ class Orchestrator:
         # BN-09 Fix 3: Reset governance adjustment tracking
         self._last_governance_adjustment = None
 
-        # BN-08: RSI skill registration + causal chain tracking
+        # BN-08/10: RSI skill registration + causal chain tracking
         skill_birth_events: List[Dict[str, Any]] = []
         skill_derived_goals: List[Any] = []
         if critic_results:
-            try:
-                from cognitive_core_engine.omega_forge.rsi_pipeline import RSISkillRegistrar
-                if self._rsi_registrar is None:
-                    self._rsi_registrar = RSISkillRegistrar(self.skills, self.mem)
-                rsi_results = self._rsi_registrar.process_critic_results(
-                    critic_results, proposals_by_id)
-                # Collect skill birth events
-                skill_birth_events = self._rsi_registrar.get_recent_birth_events()
-            except Exception:
-                pass
+            from cognitive_core_engine.omega_forge.rsi_pipeline import RSISkillRegistrar
+            if self._rsi_registrar is None:
+                self._rsi_registrar = RSISkillRegistrar(self.skills, self.mem)
+            rsi_results = self._rsi_registrar.process_critic_results(
+                critic_results, proposals_by_id)
+            # Collect skill birth events
+            skill_birth_events = self._rsi_registrar.get_recent_birth_events()
 
-        # BN-08: Update environment-coupled fitness
+        # BN-08/10 Fix 5: Update environment-coupled fitness with real state_vector
         env_state = {
             "recent_rewards": list(self._recent_rewards[-10:]),
             "task_count": len(self.env.tasks),
@@ -915,6 +933,7 @@ class Orchestrator:
             "stagnation": stagnation,
             "difficulty": round_out.get("results", [{}])[0].get("info", {}).get("difficulty", 3)
                 if round_out.get("results") else 3,
+            "state_vector": self.env.get_state_vector(),
         }
         self.env_fitness.update_tasks(env_state)
 

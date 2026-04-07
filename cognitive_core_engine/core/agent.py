@@ -146,6 +146,8 @@ class Agent:
         # BN-09 Fix 2: Track RSI skill consultation for reward feedback
         self._last_consulted_rsi_skill_id: Optional[str] = None
         self._rsi_skill_accepted: bool = False
+        # BN-10 Fix 4: Store raw skill output for env.step() skill_bonus
+        self._last_rsi_skill_output: Optional[float] = None
 
     # ------------------------------------------------------------------
     # BN-06: transition log management
@@ -262,7 +264,7 @@ class Agent:
                 if h % 5 < 2:
                     return best_curious_action
 
-        # BN-08/09: Consult RSI skills if available
+        # BN-08/09/10: Consult RSI skills if available
         vm_skills = self.skills.vm_skills()
         if vm_skills and hasattr(obs, '__getitem__'):
             try:
@@ -279,11 +281,21 @@ class Agent:
                             raw_output = sk.fn(skill_input)
                             action_idx = int(abs(raw_output)) % len(actions)
                             suggested = actions[action_idx]
-                            if suggested != draft_action and random.random() < 0.3:
-                                # BN-09 Fix 2: Store skill ID for reward feedback
-                                self._last_consulted_rsi_skill_id = sk.id
-                                self._rsi_skill_accepted = True
-                                return suggested
+                            if suggested != draft_action:
+                                # BN-10 Fix 7: Performance-based acceptance scaling
+                                perf = self.skills.skill_performance_log.get(sk.id, [])
+                                if perf and sum(perf) / len(perf) > 0:
+                                    mean_perf = sum(perf) / len(perf)
+                                    max_perf = max(abs(p) for p in perf) or 1.0
+                                    acceptance_prob = min(0.9, 0.6 + 0.3 * mean_perf / max_perf)
+                                else:
+                                    acceptance_prob = 0.6
+                                if random.random() < acceptance_prob:
+                                    self._last_consulted_rsi_skill_id = sk.id
+                                    self._rsi_skill_accepted = True
+                                    # BN-10 Fix 4: Store raw skill output
+                                    self._last_rsi_skill_output = float(raw_output)
+                                    return suggested
                         except Exception:
                             pass
             except Exception:
@@ -353,9 +365,10 @@ class Agent:
         obs: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Execute one step: plan → act → update world model → log."""
-        # BN-09 Fix 2/F4: Reset RSI skill tracking at start of every step
+        # BN-09/10: Reset RSI skill tracking at start of every step
         self._last_consulted_rsi_skill_id = None
         self._rsi_skill_accepted = False
+        self._last_rsi_skill_output = None
         # Self-model: check if we should attempt this task
         self._skip_requested = False
         if self.self_model is not None:
@@ -416,6 +429,9 @@ class Agent:
             "role": self.cfg.role, "task": obs.get("task"),
             "project_id": proj_node.id,
         }
+        # BN-10 Fix 4: Pass raw RSI skill output to env for skill_bonus
+        if self._last_rsi_skill_output is not None:
+            payload["rsi_skill_output"] = self._last_rsi_skill_output
 
         next_obs, reward, info = env.step(obs, action, payload)
 
